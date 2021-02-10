@@ -1,27 +1,6 @@
-from torch.autograd import Function
 import torch
+from torch.autograd import Function
 
-BACKEND_NAME = 'torch'
-
-def input_checks(x):
-    if x is None:
-        raise TypeError('The input should be not empty.')
-
-    contiguous_check(x)
-
-def complex_check(x):
-    if not _is_complex(x):
-        raise TypeError('The input should be complex (i.e. last dimension is 2).')
-
-def real_check(x):
-    if not _is_real(x):
-        raise TypeError('The input should be real.')
-
-def _is_complex(x):
-    return x.shape[-1] == 2
-
-def _is_real(x):
-    return x.shape[-1] == 1
 
 class ModulusStable(Function):
     """Stable complex modulus
@@ -104,6 +83,7 @@ class ModulusStable(Function):
             The gradient with respect to the input.
         """
         x, output = ctx.saved_tensors
+
         if ctx.dim is not None and ctx.keepdim is False and x.dim() != 1:
             grad_output = grad_output.unsqueeze(ctx.dim)
             output = output.unsqueeze(ctx.dim)
@@ -115,111 +95,125 @@ class ModulusStable(Function):
 
         return grad_input
 
-# shortcut for ModulusStable.apply
-modulus = ModulusStable.apply
 
-class Modulus():
-    """This class implements a modulus transform for complex numbers.
+class TorchBackend:
+    name = 'torch'
 
-        Usage
-        -----
-        modulus = Modulus()
-        x_mod = modulus(x)
+    @classmethod
+    def input_checks(cls, x):
+        if x is None:
+            raise TypeError('The input should be not empty.')
 
-        Parameters
-        ---------
-        x : tensor
-            Complex torch tensor.
+        cls.contiguous_check(x)
 
-        Returns
-        -------
-        output : tensor
-            A tensor with the same dimensions as x, such that output[..., 0]
-            contains the complex modulus of x, while output[..., 1] = 0.
-    """
-    def __call__(self, x):
-        complex_contiguous_check(x)
-        norm = modulus(x)[..., None]
+    @classmethod
+    def complex_check(cls, x):
+        if not cls._is_complex(x):
+            raise TypeError('The input should be complex (i.e. last dimension is 2).')
+
+    @classmethod
+    def real_check(cls, x):
+        if not cls._is_real(x):
+            raise TypeError('The input should be real.')
+
+    @classmethod
+    def complex_contiguous_check(cls, x):
+        cls.complex_check(x)
+        cls.contiguous_check(x)
+
+    @staticmethod
+    def contiguous_check(x):
+        if not x.is_contiguous():
+            raise RuntimeError('Tensors must be contiguous.')
+
+    @staticmethod
+    def _is_complex(x):
+        return x.shape[-1] == 2
+
+    @staticmethod
+    def _is_real(x):
+        return x.shape[-1] == 1
+
+    @classmethod
+    def modulus(cls, x):
+        cls.complex_contiguous_check(x)
+        norm = ModulusStable.apply(x)[..., None]
         return norm
 
-def complex_contiguous_check(x):
-    complex_check(x)
-    contiguous_check(x)
+    @staticmethod
+    def concatenate(arrays, dim=2):
+        return torch.stack(arrays, dim=dim)
 
-def contiguous_check(x):
-    if not x.is_contiguous():
-        raise RuntimeError('Tensors must be contiguous.')
+    @classmethod
+    def cdgmm(cls, A, B):
+        """Complex pointwise multiplication.
 
-def cdgmm(A, B):
-    """Complex pointwise multiplication.
+            Complex pointwise multiplication between (batched) tensor A and tensor B.
 
-        Complex pointwise multiplication between (batched) tensor A and tensor B.
+            Parameters
+            ----------
+            A : tensor
+                A is a complex tensor of size (B, C, M, N, 2).
+            B : tensor
+                B is a complex tensor of size (M, N, 2) or real tensor of (M, N, 1).
+            inplace : boolean, optional
+                If set to True, all the operations are performed in place.
 
-        Parameters
-        ----------
-        A : tensor
-            A is a complex tensor of size (B, C, M, N, 2).
-        B : tensor
-            B is a complex tensor of size (M, N, 2) or real tensor of (M, N, 1).
+            Raises
+            ------
+            RuntimeError
+                In the event that the filter B is not a 3-tensor with a last
+                dimension of size 1 or 2, or A and B are not compatible for
+                multiplication.
 
-        Raises
-        ------
-        RuntimeError
-            In the event that the filter B is not a 3-tensor with a last
-            dimension of size 1 or 2, or A and B are not compatible for
-            multiplication.
+            TypeError
+                In the event that A is not complex, or B does not have a final
+                dimension of 1 or 2, or A and B are not of the same dtype, or if
+                A and B are not on the same device.
 
-        TypeError
-            In the event that A is not complex, or B does not have a final
-            dimension of 1 or 2, or A and B are not of the same dtype, or if
-            A and B are not on the same device.
+            Returns
+            -------
+            C : tensor
+                Output tensor of size (B, C, M, N, 2) such that:
+                C[b, c, m, n, :] = A[b, c, m, n, :] * B[m, n, :].
 
-        Returns
-        -------
-        C : tensor
-            Output tensor of size (B, C, M, N, 2) such that:
-            C[b, c, m, n, :] = A[b, c, m, n, :] * B[m, n, :].
-
-    """
-    if not _is_real(B):
-        complex_contiguous_check(B)
-    else:
-        contiguous_check(B)
-    
-    complex_contiguous_check(A)
-
-    if A.shape[-len(B.shape):-1] != B.shape[:-1]:
-        raise RuntimeError('The filters are not compatible for multiplication.')
-
-    if A.dtype is not B.dtype:
-        raise TypeError('Input and filter must be of the same dtype.')
-
-    if B.device.type == 'cuda':
-        if A.device.type == 'cuda':
-            if A.device.index != B.device.index:
-                raise TypeError('Input and filter must be on the same GPU.')
+        """
+        if not cls._is_real(B):
+            cls.complex_contiguous_check(B)
         else:
-            raise TypeError('Input must be on GPU.')
+            cls.contiguous_check(B)
 
-    if B.device.type == 'cpu':
-        if A.device.type == 'cuda':
-            raise TypeError('Input must be on CPU.')
+        cls.complex_contiguous_check(A)
 
-    if _is_real(B):
-        return A * B
-    else:
-        C = A.new(A.shape)
+        if A.shape[-len(B.shape):-1] != B.shape[:-1]:
+            raise RuntimeError('The filters are not compatible for multiplication.')
 
-        A_r = A[..., 0].view(-1, B.nelement() // 2)
-        A_i = A[..., 1].view(-1, B.nelement() // 2)
+        if A.dtype is not B.dtype:
+            raise TypeError('Input and filter must be of the same dtype.')
 
-        B_r = B[..., 0].view(-1).unsqueeze(0).expand_as(A_r)
-        B_i = B[..., 1].view(-1).unsqueeze(0).expand_as(A_i)
+        if B.device.type == 'cuda':
+            if A.device.type == 'cuda':
+                if A.device.index != B.device.index:
+                    raise TypeError('Input and filter must be on the same GPU.')
+            else:
+                raise TypeError('Input must be on GPU.')
 
-        C[..., 0].view(-1, B.nelement() // 2)[:] = A_r * B_r - A_i * B_i
-        C[..., 1].view(-1, B.nelement() // 2)[:] = A_r * B_i + A_i * B_r
+        if B.device.type == 'cpu':
+            if A.device.type == 'cuda':
+                raise TypeError('Input must be on CPU.')
 
-        return C 
+        if cls._is_real(B):
+            return A * B
+        else:
+            C = A.new(A.shape)
 
-def concatenate(arrays, dim):
-    return torch.stack(arrays, dim=dim)
+            A_r = A[..., 0].view(-1, B.nelement() // 2)
+            A_i = A[..., 1].view(-1, B.nelement() // 2)
+
+            B_r = B[..., 0].view(-1).unsqueeze(0).expand_as(A_r)
+            B_i = B[..., 1].view(-1).unsqueeze(0).expand_as(A_i)
+
+            C[..., 0].view(-1, B.nelement() // 2)[:] = A_r * B_r - A_i * B_i
+            C[..., 1].view(-1, B.nelement() // 2)[:] = A_r * B_i + A_i * B_r
+
+            return C
