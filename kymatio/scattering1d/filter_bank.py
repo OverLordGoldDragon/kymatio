@@ -852,7 +852,7 @@ def scattering_filter_factory(J_support, J_scattering, Q, T,
     return phi_f, psi1_f, psi2_f
 
 
-def psi_fr_factory(J_pad_fr_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
+def psi_fr_factory(J_pad_frs_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
                    N_fr_scales_min, max_pad_factor_fr, unrestricted_pad_fr,
                    max_subsample_equiv_before_phi_fr,
                    subsample_equiv_relative_to_max_pad_init,
@@ -875,8 +875,8 @@ def psi_fr_factory(J_pad_fr_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
 
     Parameters
     ----------
-    J_pad_fr_max_init : int
-        `2**J_pad_fr_max_init` is the largest length of all filters.
+    J_pad_frs_max_init : int
+        `2**J_pad_frs_max_init` is the largest length of all filters.
 
     J_fr : int
         The maximum log-scale of frequential scattering in joint scattering
@@ -981,11 +981,11 @@ def psi_fr_factory(J_pad_fr_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
     ----
     For `average_fr_global==True`, largest `j0` for `psi_fr` may exceed that of
     `phi_fr`, since `max_subsample_equiv_before_phi_fr` is set to
-    `J_pad_fr_max_init` rather than largest `j0` in `phi_fr`. This is for speed,
+    `J_pad_frs_max_init` rather than largest `j0` in `phi_fr`. This is for speed,
     and since `phi_fr` will never be used.
     """
     # compute the spectral parameters of the filters
-    J_support = J_pad_fr_max_init  # begin with longest
+    J_support = J_pad_frs_max_init  # begin with longest
     N = 2**J_support
     xi_min = 2 / N  # minimal peak at bin 2
     T = 1  # for computing `sigma_low`, unused
@@ -1021,7 +1021,7 @@ def psi_fr_factory(J_pad_fr_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
                 # the wavelet but negligibly relative to the scattering scale
                 if j0_max < 0 and pad_mode_fr != 'zero':
                     raise Exception("got `j0_max = %s < 0`, meaning " % j0_max
-                                    + "`J_pad_fr_max_init` computed incorrectly.")
+                                    + "`J_pad_frs_max_init` computed incorrectly.")
                 j0_max = max(j0_max, 0)
                 break
             elif len(psi_widest) == N_fr_scales_min:
@@ -1215,7 +1215,7 @@ def psi_fr_factory(J_pad_fr_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
     return psi1_f_fr_up, psi1_f_fr_down, j0_max
 
 
-def phi_fr_factory(J_pad_fr_max_init, F, log2_F,
+def phi_fr_factory(J_pad_frs_max_init, F, log2_F,
                    N_fr_scales_min, N_fr_scales_max, unrestricted_pad_fr,
                    sampling_phi_fr='resample', criterion_amplitude=1e-3,
                    sigma0=0.1, P_max=5, eps=1e-7):
@@ -1232,8 +1232,8 @@ def phi_fr_factory(J_pad_fr_max_init, F, log2_F,
 
     Parameters
     ----------
-    J_pad_fr_max_init : int
-        `2**J_pad_fr_max_init` is the largest length of the filters.
+    J_pad_frs_max_init : int
+        `2**J_pad_frs_max_init` is the largest length of the filters.
 
     F : int
         temporal width of frequential low-pass filter, controlling amount of
@@ -1288,7 +1288,7 @@ def phi_fr_factory(J_pad_fr_max_init, F, log2_F,
     """
     # compute the spectral parameters of the filters
     sigma_low = sigma0 / F
-    J_support = J_pad_fr_max_init
+    J_support = J_pad_frs_max_init
     N = 2**J_support
 
     # initial lowpass
@@ -1305,10 +1305,10 @@ def phi_fr_factory(J_pad_fr_max_init, F, log2_F,
 
     # lowpass filters at all possible input lengths
     min_possible_pad_fr = N_fr_scales_min
-    max_possible_j0 = J_pad_fr_max_init - min_possible_pad_fr
+    max_possible_j0 = J_pad_frs_max_init - min_possible_pad_fr
     for j0 in range(1, 1 + max_possible_j0):
         factor = 2**j0
-        J_pad_fr = J_pad_fr_max_init - j0  # == N // factor
+        J_pad_fr = J_pad_frs_max_init - j0  # == N // factor
         if sampling_phi_fr == 'resample' and J_pad_fr < log2_F:
             # length is below target scale
             break
@@ -1334,9 +1334,9 @@ def phi_fr_factory(J_pad_fr_max_init, F, log2_F,
             phi_f_fr[j0] = [gauss_1d(N // factor, sigma_low, P_max=P_max,
                                      eps=eps)[:, None]]
             # dedicate separate filters for *subsampled* as opposed to *trimmed*
-            # inputs (i.e. `n1_fr_subsample` vs `J_pad_fr_max_init - J_pad_fr`)
+            # inputs (i.e. `n1_fr_subsample` vs `J_pad_frs_max_init - J_pad_fr`)
             # note this increases maximum subsampling of phi_fr relative to
-            # J_pad_fr_max_init
+            # J_pad_frs_max_init
             compute_all_subsamplings(phi_f_fr, j0=j0)
         else:
             # These won't differ from plain subsampling but we still index
