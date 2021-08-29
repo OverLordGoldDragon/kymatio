@@ -58,7 +58,8 @@ def _iterate_apply(Scx, fn):
     return out
 
 
-def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None):
+def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None,
+              mu=None):
     """Log-normalize + (optionally) standardize coefficients for learning
     algorithm suitability.
 
@@ -88,6 +89,9 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None):
         Greater will bring more disparate values closer. Too great will equalize
         too much, too low will have minimal effect.
 
+    mu : float / None
+        In case precomputed; see "Online computation".
+
     Returns
     -------
     Xnorm : tensor
@@ -113,6 +117,27 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None):
       - To keep convs valid, all spatial dims that are convolved over must be
         standardized by the same factor - i.e. same `mean` and `std`. `rscaling`
         also accounts for rescaling due to log.
+
+    Online computation
+    ------------------
+
+    Any computation with `axis` that includes `0` requires simultaneous access
+    to all samples. This poses a problem in two settings:
+
+        1. Insufficient RAM. The solution is to write an *equivalent* computation
+           that aggregates statistics one sample at a time. E.g. for `mu`:
+
+               Xsum = []
+               for x in dataset:
+                   Xsum.append(B.sum(x, axis=-1, keepdims=True))
+               mu = B.median(B.vstack(Xsum), axis=0, keepdims=True)
+
+        2. Streaming / new samples. In this case we must reuse parameters computed
+           over e.g. entire train set.
+
+    Computations over all axes *except* `0` are done on per-sample basis, which
+    means not having to rely on other samples - but also an inability to do so
+    (i.e. to precompute and reuse params).
     """
     # validate args & set defaults ###########################################
     supported = ('l1', 'l2', None)
@@ -127,10 +152,11 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None):
         C = 130 * B.mean(B.abs(X))
 
     # main transform #########################################################
-    # time-sum (integral)
-    Xsum = B.sum(X, axis=-1, keepdims=True)
-    # sample-median
-    mu = B.median(Xsum, axis=0, keepdims=True)
+    if mu is None:
+        # time-sum (integral)
+        Xsum = B.sum(X, axis=-1, keepdims=True)
+        # sample-median
+        mu = B.median(Xsum, axis=0, keepdims=True)
     # rescale
     Xnorm = X / mu
     # log
@@ -141,7 +167,8 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None):
         Xnorm -= B.mean(Xnorm, axis=mean_axis, keepdims=True)
 
     if rscaling is not None:
-        kw = dict(axis=(0, 2), keepdims=True)
+        # rescale per `feature` and per `sample`
+        kw = dict(axis=-1, keepdims=True)
         ord = (2 if rscaling == 'l2' else 1)
         Xstd = X - B.mean(X, **kw)
         norms_orig = B.norm(Xstd,  ord=ord, **kw)
