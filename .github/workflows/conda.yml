@@ -61,4 +61,4 @@ jobs:
             - name: Test
               run: >
                   
-                  conda run -n ${CONDA_ENV} pytest --cov=kymatio || true
+                  conda run -n ${CONDA_ENV} pytest --cov=kymatio
