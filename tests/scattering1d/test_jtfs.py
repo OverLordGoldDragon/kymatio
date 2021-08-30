@@ -593,12 +593,18 @@ def test_compute_temporal_width():
                     T_est, T, th_undershoot, test_params_str)
 
     # Agreement of `fast=True` with `False` for complete decay
+    # also try non-default `sigma0`
     N = 256
     for T in range(1, 16):
         p_f = gauss_1d(N, sigma=0.1 / T)
         w0 = compute_temporal_width(p_f, fast=True)
         w1 = compute_temporal_width(p_f, fast=False)
-        assert w0 == w1, (w0, w1)
+        assert w0 == w1 == T, (w0, w1, T)
+
+        sigma0 = .15
+        p_f = gauss_1d(N, sigma=sigma0 / T)
+        w = compute_temporal_width(p_f, sigma0=sigma0, fast=False)
+        assert w == T, (w, T)
 
 
 def test_tensor_padded():
