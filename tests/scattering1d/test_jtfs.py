@@ -82,7 +82,7 @@ def test_alignment():
                           mx_idx_i, mx_idx, pair, i, test_params_str)
 
           if J_fr == 3:
-              # assert not all J_pad_fr are same so test covers this case
+              # assert not all J_pad_frs are same so test covers this case
               assert_pad_difference(jtfs, test_params_str)
 
 
@@ -283,7 +283,7 @@ def test_sampling_psi_fr_exclude():
     # required otherwise 'exclude' == 'resample'
     assert_pad_difference(jtfs0, test_params_str)
     # reproduce case with different J_pad_fr
-    assert jtfs0.J_pad_fr != jtfs1.J_pad_fr, jtfs0.J_pad_fr
+    assert jtfs0.J_pad_frs != jtfs1.J_pad_frs, jtfs0.J_pad_frs
 
     Scx0 = jtfs0(x)
     Scx1 = jtfs1(x)
@@ -303,7 +303,7 @@ def test_sampling_psi_fr_exclude():
 
             is_joint = bool(pair not in ('S0', 'S1'))
             if is_joint:
-                pad, pad_max = jtfs1.J_pad_fr[n0[0]], jtfs1.J_pad_fr_max
+                pad, pad_max = jtfs1.J_pad_frs[n0[0]], jtfs1.J_pad_frs_max
             if n0 != n1:
                 assert is_joint, (
                     "found mismatch in time scattered coefficients\n%s" % info)
@@ -397,8 +397,8 @@ def test_out_exclude():
 
 
 def test_global_averaging():
-    """Test that `T==N` and `F==pow2(shape_fr_max)` doesn't error, and outputs
-    close to `T==N-1` and `F==pow2(shape_fr_max)-1`
+    """Test that `T==N` and `F==pow2(N_frs_max)` doesn't error, and outputs
+    close to `T==N-1` and `F==pow2(N_frs_max)-1`
     """
     np.random.seed(0)
     N = 512
@@ -414,7 +414,7 @@ def test_global_averaging():
     metas = {}
     Ts, Fs = (N - 1, N), (2**5 - 1, 2**5)
     for T in Ts:
-        # shape_fr_max ~= Q*max(p2['j'] for p2 in psi2_f); found 29 at runtime
+        # N_frs_max ~= Q*max(p2['j'] for p2 in psi2_f); found 29 at runtime
         for F in Fs:
             jtfs = TimeFrequencyScattering1D(**params, T=T, F=F)
             assert (jtfs.average_fr_global if F == Fs[-1] else
@@ -591,6 +591,14 @@ def test_compute_temporal_width():
             else:
                 assert T_est - T > th_undershoot, "{} - {} <= {} | {}".format(
                     T_est, T, th_undershoot, test_params_str)
+
+    # Agreement of `fast=True` with `False` for complete decay
+    N = 256
+    for T in range(1, 16):
+        p_f = gauss_1d(N, sigma=0.1 / T)
+        w0 = compute_temporal_width(p_f, fast=True)
+        w1 = compute_temporal_width(p_f, fast=False)
+        assert w0 == w1, (w0, w1)
 
 
 def test_tensor_padded():
@@ -933,6 +941,7 @@ def test_pad_mode_fr():
     out0 = jtfs0(x)
     out1 = jtfs1(x)
     assert np.allclose(out0, out1)
+
 
 def test_no_second_order_filters():
     """Reproduce edge case: configuration yields no second-order wavelets
@@ -1478,10 +1487,10 @@ def concat_joint(Scx):
 
 def assert_pad_difference(jtfs, test_params_str):
     assert not all(
-        J_pad_fr == jtfs.J_pad_fr_max
-        for J_pad_fr in jtfs.J_pad_fr if J_pad_fr != -1
-        ), "\n{}\nJ_pad_fr={}\nshape_fr={}".format(
-            test_params_str, jtfs.J_pad_fr, jtfs.shape_fr)
+        J_pad_fr == jtfs.J_pad_frs_max
+        for J_pad_fr in jtfs.J_pad_frs if J_pad_fr != -1
+        ), "\n{}\nJ_pad_fr={}\nN_frs={}".format(
+            test_params_str, jtfs.J_pad_frs, jtfs.N_frs)
 
 
 if __name__ == '__main__':

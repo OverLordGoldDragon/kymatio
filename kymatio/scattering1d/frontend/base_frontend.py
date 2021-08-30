@@ -1715,7 +1715,7 @@ class _FrequencyScatteringBase(ScatteringBase):
             # adjust existing J_pad_fr per (potentially) new J_pad_frs_min_limit;
             # overrides `max_pad_factor_fr`.
             for n2, (J_pad_fr, N_fr
-                     ) in enumerate(zip(self.J_pad_fr, self.N_frs)):
+                     ) in enumerate(zip(self.J_pad_frs, self.N_frs)):
                 if J_pad_fr != -1:
                     if self.unrestricted_pad_fr:
                         J_pad_fr = max(J_pad_fr, self.J_pad_frs_min_limit)

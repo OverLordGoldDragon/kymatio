@@ -103,7 +103,7 @@ def timefrequency_scattering1d(
     ----------
       - Check following sc_freq attributes:
           - N_frs
-          - J_pad_fr, J_pad_frs_max_init
+          - J_pad_frs, J_pad_frs_max_init
           - ind_end_fr, ind_end_fr_max
     """
     """
@@ -844,7 +844,7 @@ def timefrequency_scattering1d(
             if aligned and out_3D:
                 pad_fr = sc_freq.J_pad_frs_max
             else:
-                pad_fr = sc_freq.J_pad_fr[n2]
+                pad_fr = sc_freq.J_pad_frs[n2]
 
             if sc_freq.pad_mode_fr == 'custom':
                 Y_2_arr = sc_freq.pad_fn_fr(Y_2_list, pad_fr, sc_freq, B)

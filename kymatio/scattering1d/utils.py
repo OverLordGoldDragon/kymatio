@@ -483,7 +483,7 @@ def compute_meta_jtfs(J_pad, J, Q, J_fr, Q_fr, T, F, aligned, out_3D, out_type,
         # _frequency_scattering() or _frequency_lowpass() ####################
         # `n2 == -1` correctly indexes maximal amount of padding and unpadding
         pad_fr = (sc_freq.J_pad_frs_max if (aligned and out_3D) else
-                  sc_freq.J_pad_fr[n2])
+                  sc_freq.J_pad_frs[n2])
         N_fr_padded = 2**pad_fr
         subsample_equiv_due_to_pad = sc_freq.J_pad_frs_max_init - pad_fr
 
@@ -571,7 +571,7 @@ def compute_meta_jtfs(J_pad, J, Q, J_fr, Q_fr, T, F, aligned, out_3D, out_type,
             return False
 
         pad_fr = (sc_freq.J_pad_frs_max if (aligned and out_3D) else
-                  sc_freq.J_pad_fr[n2])
+                  sc_freq.J_pad_frs[n2])
         subsample_equiv_due_to_pad = sc_freq.J_pad_frs_max_init - pad_fr
         j0s = [k for k in sc_freq.psi1_f_fr_up[n1_fr] if isinstance(k, int)]
         if subsample_equiv_due_to_pad not in j0s:
