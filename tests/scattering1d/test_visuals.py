@@ -8,7 +8,7 @@ from utils import tempdir
 # backend to use for most tests
 default_backend = 'numpy'
 # set True to execute all test functions without pytest
-run_without_pytest = 1
+run_without_pytest = 0
 # set True to disable matplotlib plots
 # (done automatically for CI via `conftest.py`, but `False` here takes precedence)
 no_plots = 1
