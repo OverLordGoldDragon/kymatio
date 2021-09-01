@@ -1606,6 +1606,8 @@ def _ticks(xticks, yticks):
 
 
 def _title(title, ax=None):
+    if title is None:
+        return
     title, kw = (title if isinstance(title, tuple) else
                  (title, {}))
     defaults = dict(loc='left', fontsize=17, weight='bold')

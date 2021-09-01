@@ -1933,7 +1933,7 @@ class ExtendedUnifiedBackend():
         # fetch from kymatio.backend if possible
         if hasattr(self.Bk, name):
             return getattr(self.Bk, name)
-        raise AttributeError(f"'{type(self.Bk).__name__}' object has no "
+        raise AttributeError(f"'{self.Bk.__name__}' object has no "
                              f"attribute '{name}'")
 
     def abs(self, x):
@@ -1957,41 +1957,43 @@ class ExtendedUnifiedBackend():
             out = self.B.reduce_sum(x, axis=axis, keepdims=keepdims)
         return out
 
-    def norm(self, x, ord=2, axis=None):
+    def norm(self, x, ord=2, axis=None, keepdims=True):
         if self.backend_name == 'numpy':
             if ord == 1:
-                out = np.sum(np.abs(x), axis=axis)
+                out = np.sum(np.abs(x), axis=axis, keepdims=keepdims)
             elif ord == 2:
-                out = np.linalg.norm(x, ord=None, axis=axis)
+                out = np.linalg.norm(x, ord=None, axis=axis, keepdims=keepdims)
             else:
-                out = np.linalg.norm(x, ord=ord, axis=axis)
+                out = np.linalg.norm(x, ord=ord, axis=axis, keepdims=keepdims)
         elif self.backend_name == 'torch':
-            out = self.B.norm(x, p=ord, dim=axis)
+            out = self.B.norm(x, p=ord, dim=axis, keepdim=keepdims)
         else:
-            out = self.B.norm(x, ord=ord, axis=axis)
+            out = self.B.norm(x, ord=ord, axis=axis, keepdims=keepdims)
         return out
 
-    def median(self, x, axis=None):
+    def median(self, x, axis=None, keepdims=None):
+        if keepdims is None and self.backend_name != 'tensorflow':
+            keepdims = True
         if self.backend_name == 'numpy':
-            out = np.median(x, axis=axis)
+            out = np.median(x, axis=axis, keepdims=keepdims)
         elif self.backend_name == 'torch':
-            out = self.B.median(x, dim=axis)
+            out = self.B.median(x, dim=axis, keepdim=keepdims)
         else:
-            if axis is not None:
-                raise ValueError("`axis` for `median` in TensorFlow backend "
-                                 "not implemented.")
+            if axis is not None or keepdims is not None:
+                raise ValueError("`axis` and `keepdims` for `median` in "
+                                 "TensorFlow backend are not implemented.")
             v = self.B.reshape(x, [-1])
             m = v.get_shape()[0]//2
             out = self.B.reduce_min(self.B.nn.top_k(v, m, sorted=False).values)
         return out
 
-    def std(self, x, axis=None):
+    def std(self, x, axis=None, keepdims=True):
         if self.backend_name == 'numpy':
-            out = np.std(x, axis=axis)
+            out = np.std(x, axis=axis, keepdims=keepdims)
         elif self.backend_name == 'torch':
-            out = self.B.std(x, dim=axis)
+            out = self.B.std(x, dim=axis, keepdim=keepdims)
         else:
-            out = self.B.math.reduce_std(x, axis=axis)
+            out = self.B.math.reduce_std(x, axis=axis, keepdims=keepdims)
         return out
 
     def numpy(self, x):
