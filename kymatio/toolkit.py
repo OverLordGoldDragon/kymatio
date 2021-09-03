@@ -1740,27 +1740,27 @@ def energy(x, kind='l2'):
             B.norm(x, ord=2)**2)
 
 
-def _l2(x):
+def _l2(x, axis=None):
     """`sqrt(sum(abs(x)**2))`."""
     B = ExtendedUnifiedBackend(x)
-    return B.norm(x, ord=2)
+    return B.norm(x, ord=2, axis=axis)
 
-def l2(x0, x1, adj=False):
+def l2(x0, x1, axis=None, adj=False):
     """Coeff distance measure; Eq 2.24 in
     https://www.di.ens.fr/~mallat/papiers/ScatCPAM.pdf
     """
-    ref = _l2(x0) if not adj else (_l2(x0) + _l2(x1)) / 2
-    return _l2(x1 - x0) / ref
+    ref = _l2(x0, axis) if not adj else (_l2(x0, axis) + _l2(x1, axis)) / 2
+    return _l2(x1 - x0, axis) / ref
 
 
-def _l1(x):
+def _l1(x, axis=None):
     """`sum(abs(x))`."""
     B = ExtendedUnifiedBackend(x)
     return B.norm(x, ord=1)
 
-def l1(x0, x1, adj=False):
-    ref = _l1(x0) if not adj else (_l1(x0) + _l1(x1)) / 2
-    return _l1(x1 - x0) / ref
+def l1(x0, x1, adj=False, axis=None):
+    ref = _l1(x0, axis) if not adj else (_l1(x0, axis) + _l1(x1, axis)) / 2
+    return _l1(x1 - x0, axis) / ref
 
 
 def rel_ae(x0, x1, eps=None, ref_both=True):
@@ -1792,11 +1792,15 @@ def echirp(N, fmin=1, fmax=None, tmin=0, tmax=1):
     fmax = fmax or N // 2
     t = np.linspace(tmin, tmax, N)
 
+    phi = _echirp_fn(fmin, fmax, tmin, tmax)(t)
+    return np.cos(phi)
+
+
+def _echirp_fn(fmin, fmax, tmin=0, tmax=1):
     a = (fmin**tmax / fmax**tmin) ** (1/(tmax - tmin))
     b = fmax**(1/tmax) * (1/a)**(1/tmax)
-
-    phi = 2*np.pi * (a/np.log(b)) * (b**t - b**tmin)
-    return np.cos(phi)
+    phi = lambda t: 2*np.pi * (a/np.log(b)) * (b**t - b**tmin)
+    return phi
 
 
 def fdts(N, n_partials=2, total_shift=None, f0=None, seg_len=None,

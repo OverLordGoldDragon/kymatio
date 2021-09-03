@@ -106,6 +106,9 @@ class ScatteringTorch1D(ScatteringTorch, ScatteringBase1D):
         # convert to tensor if it isn't already
         if type(x).__module__.split('.')[0] == 'numpy':
             x = torch.from_numpy(x).to(device=self.psi1_f[0][0].device.type)
+        device = self.psi1_f[0][0].device.type
+        if x.device.type != device:
+            x = x.to(device)
 
         S = scattering1d(x, self.pad_fn, self.backend.unpad, self.backend, self.J, self.log2_T, self.psi1_f, self.psi2_f,
                          self.phi_f, max_order=self.max_order, average=self.average,

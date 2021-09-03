@@ -363,7 +363,7 @@ def compute_minimum_required_length(fn, N_init, max_N=None,
             continue
 
         p_halfwidth = compute_temporal_support(
-            p_fr, criterion_amplitude=criterion_amplitude)
+            p_fr, criterion_amplitude=criterion_amplitude, warn=False)
 
         if N > 1e9:  # avoid crash
             raise Exception("couldn't satisfy stop criterion before `N > 1e9`; "

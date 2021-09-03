@@ -1425,7 +1425,7 @@ def imshow(x, title=None, show=True, cmap=None, norm=None, abs=0,
         ax.set_xticks([])
         ax.set_yticks([])
     if xticks is not None or yticks is not None:
-        _ticks(xticks, yticks)
+        _ticks(xticks, yticks, ax)
     if not borders:
         for spine in ax.spines:
             ax.spines[spine].set_visible(False)
@@ -1481,9 +1481,9 @@ def plot(x, y=None, title=None, show=0, complex=0, abs=0, w=None, h=None,
 
     # styling
     if vlines:
-        vhlines(vlines, kind='v')
+        vhlines(vlines, kind='v', ax=ax)
     if hlines:
-        vhlines(hlines, kind='h')
+        vhlines(hlines, kind='h', ax=ax)
 
     ticks = ticks if isinstance(ticks, (list, tuple)) else (ticks, ticks)
     if not ticks[0]:
@@ -1491,7 +1491,7 @@ def plot(x, y=None, title=None, show=0, complex=0, abs=0, w=None, h=None,
     if not ticks[1]:
         ax.set_yticks([])
     if xticks is not None or yticks is not None:
-        _ticks(xticks, yticks)
+        _ticks(xticks, yticks, ax)
 
     if title is not None:
         _title(title, ax=ax)
@@ -1532,9 +1532,9 @@ def scat(x, y=None, title=None, show=0, s=18, w=None, h=None,
     if title is not None:
         _title(title, ax=ax)
     if vlines:
-        vhlines(vlines, kind='v')
+        vhlines(vlines, kind='v', ax=ax)
     if hlines:
-        vhlines(hlines, kind='h')
+        vhlines(hlines, kind='h', ax=ax)
     _scale_plot(fig, ax, show=show, w=w, h=h, xlims=xlims, ylims=ylims,
                 xlabel=xlabel, ylabel=ylabel, auto_xlims=auto_xlims)
 
@@ -1572,8 +1572,8 @@ def hist(x, bins=500, title=None, show=0, stats=0, ax=None, fig=None,
         return mu, std, mn, mx
 
 
-def vhlines(lines, kind='v'):
-    lfn = getattr(plt, f'ax{kind}line')
+def vhlines(lines, kind='v', ax=None):
+    lfn = getattr(plt if ax is None else ax, f'ax{kind}line')
 
     if not isinstance(lines, (list, tuple)):
         lines, lkw = [lines], {}
@@ -1590,7 +1590,7 @@ def vhlines(lines, kind='v'):
         lfn(line, **lkw)
 
 #### misc / utils ############################################################
-def _ticks(xticks, yticks):
+def _ticks(xticks, yticks, ax):
     def fmt(ticks):
         return ("%.d" if all(float(h).is_integer() for h in ticks) else
                 "%.2f")
@@ -1598,11 +1598,14 @@ def _ticks(xticks, yticks):
     if yticks is not None:
         idxs = np.linspace(0, len(yticks) - 1, 8).astype('int32')
         yt = [fmt(yticks) % h for h in np.asarray(yticks)[idxs]]
+        ax.set_yticks(idxs)
+        ax.set_yticklabels(yt)
         plt.yticks(idxs, yt)
     if xticks is not None:
         idxs = np.linspace(0, len(xticks) - 1, 8).astype('int32')
         xt = [fmt(xticks) % h for h in np.asarray(xticks)[idxs]]
-        plt.xticks(idxs, xt)
+        ax.set_xticks(idxs)
+        ax.set_xticklabels(xt)
 
 
 def _title(title, ax=None):

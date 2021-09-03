@@ -132,9 +132,9 @@ class ScatteringBase1D(ScatteringBase):
             criterion_amplitude=self.criterion_amplitude, r_psi=self.r_psi,
             sigma0=self.sigma0, alpha=self.alpha, P_max=self.P_max, eps=self.eps)
 
-        # energy norm
-        energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
-                                  self.J, self.log2_T)
+        # energy norm # TODO
+        # energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
+        #                           self.J, self.log2_T)
         # analyticity
         if self.analytic:
           for psi_fs in (self.psi1_f, self.psi2_f):
@@ -1831,7 +1831,7 @@ class _FrequencyScatteringBase(ScatteringBase):
         # Implem doesn't account for this as the effect is rare and most often
         # not great, while greatly complicating implem logic
         self._J_pad_frs_fo = self.compute_J_pad(self.N_frs_max_all,
-                                               recompute=True, Q=(0, 0))
+                                                recompute=True, Q=(0, 0))
 
     def _compute_padding_params(self, J_pad, N_fr):
         pad_left = 0
@@ -1885,18 +1885,25 @@ class _FrequencyScatteringBase(ScatteringBase):
         min_to_pad, pad_phi, pad_psi1, _ = compute_minimum_support_to_pad(
             N_fr, self.J_fr, Q, self.F, pad_mode=self.pad_mode_fr,
             r_psi=self.r_psi_fr,
-            **self.get_params( 'sigma0', 'alpha', 'P_max', 'eps',
+            **self.get_params('sigma0', 'alpha', 'P_max', 'eps',
                               'criterion_amplitude', 'normalize'))
         if self.average_fr_global_phi:
             min_to_pad = pad_psi1  # ignore phi's padding
             pad_phi = 0
         J_pad = math.ceil(np.log2(N_fr + 2 * min_to_pad))
 
+        # adjust per `max_pad_factor_fr` and warn if needed
         if not self.unrestricted_pad_fr:
+            J_pad_ideal = J_pad
             N_fr_scale = math.ceil(math.log2(N_fr))
             scale_diff = self.N_fr_scales_max - N_fr_scale
             J_pad = min(J_pad,
                         N_fr_scale + self.max_pad_factor_fr[scale_diff])
+
+            if J_pad - J_pad_ideal > 2:
+                warnings.warn("Insufficient frequential padding, will yield "
+                              "severe boundary effects; recommended higher "
+                              "`max_pad_factor_fr` or lower `J_fr` or `F`.")
         return J_pad, min_to_pad, pad_phi, pad_psi1
 
     def get_params(self, *args):
