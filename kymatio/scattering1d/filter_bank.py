@@ -163,6 +163,7 @@ def get_normalizing_factor(h_f, normalize='l1'):
     if np.abs(h_real).sum() < 1e-7:
         raise ValueError('Zero division error is very likely to occur, ' +
                          'aborting computations now.')
+    normalize = normalize.split('-')[0]  # in case of `-energy`
     if normalize == 'l1':
         norm_factor = 1. / (np.abs(h_real).sum())
     elif normalize == 'l2':
@@ -358,7 +359,9 @@ def compute_minimum_required_length(fn, N_init, max_N=None,
     while True:
         try:
             p_fr = fn(N)
-        except ValueError:  # get_normalizing_factor()
+        except ValueError as e:  # get_normalizing_factor()
+            if "division" not in str(e):
+                raise e
             N *= 2
             continue
 
@@ -1143,7 +1146,9 @@ def psi_fr_factory(J_pad_frs_max_init, J_fr, Q_fr, N_frs, N_fr_scales_max,
                 psi = morlet_1d(N // 2**j0, xi, sigma, normalize=normalize,
                                 P_max=P_max, eps=eps)[:, None]
             except ValueError as e:
-                if sampling_psi_fr == 'resample':
+                if "division" not in str(e):
+                    raise e
+                elif sampling_psi_fr == 'resample':
                     j0_max = j0_prev
                     cleanup = True
                     break
@@ -1381,24 +1386,36 @@ def phi_fr_factory(J_pad_frs_max_init, F, log2_F,
 
 
 #### Energy renormalization ##################################################
-def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T):
+def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T,
+                              nyquist_correction=True):
     """Energy-renormalize temporal filterbank; used by `base_frontend`.
     See `help(kymatio.scattering1d.filter_bank.energy_norm_filterbank)`.
     """
     # in case of `trim_tm` for JTFS
     phi = phi_f[0][0] if isinstance(phi_f[0], list) else phi_f[0]
     kw = dict(phi_f=phi, J=J, log2_T=log2_T)
-    psi1_f0 = [p[0] for p in psi1_f]
-    psi2_f0 = [p[0] for p in psi2_f]
+    psi1_f0 = psi1_f#[p[0] for p in psi1_f]
+    psi2_f0 = psi2_f#[p[0] for p in psi2_f]
 
-    energy_norm_filterbank(psi1_f0, **kw)
-    scaling_factors2 = energy_norm_filterbank(psi2_f0, **kw)
+    # handle `nyquist_correction`
+    if isinstance(nyquist_correction, tuple):
+        nc0, nc1 = nyquist_correction
+    else:
+        nc0 = nc1 = nyquist_correction
+    nc0 = 0
+    nc1 = 0
+    uniform0 = 1
+    uniform1 = 1
+    energy_norm_filterbank(psi1_f0, nyquist_correction=nc0, uniform=uniform0,
+                           **kw)
+    scaling_factors2 = energy_norm_filterbank(psi2_f0, nyquist_correction=nc1,
+                                              uniform=uniform1, **kw)
 
     # apply unsubsampled scaling factors on subsampled
     for n2 in range(len(psi2_f)):
         for k in psi2_f[n2]:
             if isinstance(k, int) and k != 0:
-                psi2_f[n2][k] *= scaling_factors2[n2]
+                psi2_f[n2][k] *= scaling_factors2[1][n2]
 
 
 def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
@@ -1412,8 +1429,21 @@ def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
 
     j0_break = None
     for j0 in range(j0_max + 1):
-        psi_fs_up   = [p[j0] for p in psi1_f_fr_up if j0 in p]
-        psi_fs_down = [p[j0] for p in psi1_f_fr_down if j0 in p]
+        # pack like first-order, per `j0`
+        psi_fs_all = []
+        for psi_fs in (psi1_f_fr_up, psi1_f_fr_down):
+            psi_fs_all.append([])
+            for p in psi_fs:
+                psi_f = {}
+                for k, v in p.items():
+                    if k == j0:
+                        psi_f[0] = v
+                    elif j0 in v:
+                        psi_f[k] = v[j0]
+                if len(psi_f) > 0:
+                    psi_fs_all[-1].append(psi_f)
+        psi_fs_up, psi_fs_down = psi_fs_all
+
         if len(psi_fs_up) <= 3:  # possible with `sampling_psi_fr = 'exclude'`
             if j0 == 0:
                 raise Exception("largest scale filterbank must have >=4 filters")
@@ -1435,7 +1465,8 @@ def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
 
 
 def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
-                           J=None, log2_T=None, r_th=.3, passes=3,
+                           J=None, log2_T=None, r_th=.3, passes=None,
+                           uniform=False, nyquist_correction=None,
                            scaling_factors=None):
     """Rescale wavelets such that their frequency-domain energy sum
     (Littlewood-Paley sum) peaks at 2 for an analytic-only filterbank
@@ -1444,7 +1475,7 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
 
     Parameters
     ----------
-    psi_fs0 : list[np.ndarray]
+    psi_fs0 : list[np.ndarray]  # TODO
         Analytic filters if `psi_fs1=None`, else anti-analytic (spin up).
 
     psi_fs1 : list[np.ndarray] / None
@@ -1462,8 +1493,26 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
         Redundancy threshold, determines whether "Nyquist correction" is done
         (see Algorithm below).
 
-    passes : int
+    passes : int / None
         Number of times to call this function recursively; see Algorithm.
+        Defaults to 3 if `not uniform`, else 1.
+
+    uniform : bool (default False) / tuple[bool]
+        Whether to rescale all filters by the same constant. Tuple specifies
+        this separately for non-CQT and CQT portions, respectively.
+        Overrides `nyquist_correction`.
+
+    nyquist_correction : bool / None (default)
+        Whether to run scaling algorithm on highest-frequency filter separately
+        after other filters - needed since it lacks filters from both sides,
+        making rescaling insufficient to meet LP-sum bound.
+
+        Undesired for JTFS at first order since per rescaling *without* Nyquist
+        correction, ~all  CQT filters will have ~same frequential peak, which is
+        desired for frequential scattering.
+
+        Overridden by `uniform` (sets to `False`).
+        # TODO so rescale all in CQT and non-CQT by two separate constants?
 
     scaling_factors : None / dict[float]
         Used internally if `passes > 1`.
@@ -1491,7 +1540,8 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
     case behavior is accounted for in one go (which is possible but complicated);
     the computational burden is minimal.
     """
-    def norm_filter(psi_fs, peak_idxs, lp_sum, n, s_idx=1):
+    def norm_filter(psi_fs, peak_idxs, lp_sum, n, do_scaling, s_idx=1):
+        # higher freq idx
         if n - 1 in peak_idxs:
             # midpoint
             pi0, pi1 = peak_idxs[n], peak_idxs[n - 1]
@@ -1509,8 +1559,9 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
         else:
             a = peak_idxs[n]
 
+        # lower freq idx
         if n + 1 in peak_idxs:
-            if n == 0 and do_nyquist_correction:
+            if n == 0 and nyquist_correction:
                 b = a + 1 if s_idx == 0 else a - 1
             else:
                 b = peak_idxs[n + 1]
@@ -1541,16 +1592,17 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
 
         lp_max = lp_sum[start:end].max()
         factor = np.sqrt(peak_target / lp_max)
-        psi_fs[n] *= factor
-        scaling_factors[n] = factor
+        if do_scaling:
+            psi_fs[n][0] *= factor
+        scaling_factors[s_idx][n] = factor
 
     def correct_nyquist(psi_fs_all, peak_idxs, lp_sum):
-        def _do_correction(start, end):
+        def _do_correction(start, end, s_idx=1):
             lp_max = lp_sum[start:end].max()
             factor = np.sqrt(peak_target / lp_max)
             for n in (0, 1):
-                psi_fs[n] *= factor
-                scaling_factors[n] *= factor
+                psi_fs[n][0] *= factor
+                scaling_factors[s_idx][n] *= factor
 
         # first (Nyquist-nearest) psi rescaling may drive LP sum above bound
         # for second psi, since peak was taken only at itself
@@ -1566,42 +1618,60 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
                 start, end = (a, b) if s_idx == 0 else (b, a)
                 # include endpoint
                 end += 1
-                _do_correction(start, end)
+                _do_correction(start, end, s_idx)
 
-    # run input checks
+    # run input checks #######################################################
     assert len(psi_fs0) >= 3, (
         "must have at least 3 filters in filterbank (got %s)" % len(psi_fs0))
     if psi_fs1 is not None:
         assert len(psi_fs0) == len(psi_fs1), (
             "analytic & anti-analytic filterbanks "
             "must have same number of filters")
+    # handle `uniform`
+    uniform_cqt, uniform_non_cqt = (uniform if isinstance(uniform, tuple) else
+                                    (uniform, uniform))
+    do_scaling = bool(not (uniform_cqt or uniform_non_cqt))
+    # handle `passes`
+    if passes is None:
+        passes = 3 if do_scaling else 1
+    elif passes > 1 and (uniform_cqt or uniform_non_cqt):
+        1/0
+        warnings.warn("`passes > 1` is unsupported with `any(uniform) == True`; "
+                      "using `passes = 1`.")
+        passes = 1
+    # handle `nyquist_correction`
+    # assume same overlap for analytic and anti-analytic
+    if nyquist_correction is None:
+        r = compute_filter_redundancy(psi_fs0[0][0], psi_fs0[1][0])
+        nyquist_correction = bool(r < r_th and not do_scaling)
+    elif nyquist_correction and not do_scaling:
+        1/0
+        warnings.warn("can't have `nyquist_correction==True` with "
+                      "`uniform==True`; setting former to `False`.")
+        nyquist_correction = False
 
     # as opposed to `analytic_and_anti_analytic`
-    analytic_only = psi_fs1 is None
+    analytic_only = bool(psi_fs1 is None)
     peak_target = 2 if analytic_only else 1
 
+    # execute ################################################################
     # store rescaling factors
     if scaling_factors is None:  # else means passes>1
-        scaling_factors = {}
-
-    # determine whether to do Nyquist correction
-    # assume same overlap for analytic and anti-analytic
-    r = compute_filter_redundancy(psi_fs0[0], psi_fs0[1])
-    do_nyquist_correction = bool(r < r_th)
+        scaling_factors = {0: {}, 1: {}}
 
     # compute peak indices
     if analytic_only:
         psi_fs_all = psi_fs0
         peak_idxs = {}
         for n, psi_f in enumerate(psi_fs0):
-            peak_idxs[n] = np.argmax(psi_f)
+            peak_idxs[n] = np.argmax(psi_f[0])
     else:
         psi_fs_all = (psi_fs0, psi_fs1)
         peak_idxs = {}
         for s_idx, psi_fs in enumerate(psi_fs_all):
             peak_idxs[s_idx] = {}
             for n, psi_f in enumerate(psi_fs):
-                peak_idxs[s_idx][n] = np.argmax(psi_f)
+                peak_idxs[s_idx][n] = np.argmax(psi_f[0])
 
     # ensure LP sum peaks at 2 (analytic-only) or 1 (analytic + anti-analytic)
     def get_lp_sum():
@@ -1611,22 +1681,41 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None,
                 _compute_lp_sum(psi_fs1))
 
     lp_sum = get_lp_sum()
-    if analytic_only:
+    if analytic_only:  # time scattering
         for n in range(len(psi_fs0)):
-            norm_filter(psi_fs0, peak_idxs, lp_sum, n)
-    else:
+            norm_filter(psi_fs0, peak_idxs, lp_sum, n, do_scaling)
+    else:  # frequential scattering
         for s_idx, psi_fs in enumerate(psi_fs_all):
             for n in range(len(psi_fs)):
-                norm_filter(psi_fs, peak_idxs[s_idx], lp_sum, n, s_idx)
+                norm_filter(psi_fs, peak_idxs[s_idx], lp_sum, n, do_scaling,
+                            s_idx)
+    # `uniform` case
+    if not do_scaling:
+        def norm_filters_uniformly(psi_fs, s_idx=1):
+            n_cqt = sum(p['is_cqt'] for p in psi_fs0)
+            # enforce LP-sum bound by taking max
+            sf = list(scaling_factors[s_idx].values())
+            scaling_cqt     = min(sf[:n_cqt]) if n_cqt > 0 else None
+            scaling_non_cqt = min(sf[n_cqt:]) if n_cqt < len(psi_fs) else None
+            for n, p in enumerate(psi_fs0):
+                p[0] *= (scaling_cqt if p['is_cqt'] else
+                         scaling_non_cqt)
 
-    if do_nyquist_correction:
-        lp_sum = get_lp_sum()
+        if analytic_only:
+            norm_filters_uniformly(psi_fs0, s_idx=1)
+        else:
+            for s_idx, psi_fs in enumerate(psi_fs_all):
+                norm_filters_uniformly(psi_fs, s_idx=s_idx)
+
+    if nyquist_correction:
+        lp_sum = get_lp_sum()  # compute against latest
         correct_nyquist(psi_fs_all, peak_idxs, lp_sum)
 
-    if passes == 1:
+    if passes == 1:  # TODO un-scale then scale uniformly?
         return scaling_factors
     return energy_norm_filterbank(psi_fs0, psi_fs1, phi_f, J, log2_T,
-                                  r_th, passes - 1, scaling_factors)
+                                  r_th, passes - 1, uniform, nyquist_correction,
+                                  scaling_factors)
 
 
 #### misc / long #############################################################
@@ -1867,7 +1956,7 @@ def compute_temporal_width(p_f, N=None, pts_per_scale=6, fast=True,
 def _compute_lp_sum(psi_fs, phi_f=None, J=None, log2_T=None):
     lp_sum = 0
     for psi_f in psi_fs:
-        lp_sum += np.abs(psi_f)**2
+        lp_sum += np.abs(psi_f[0])**2
     if phi_f is not None and (
             # else lowest frequency bandpasses are too attenuated
             log2_T is not None and J is not None and log2_T >= J):
