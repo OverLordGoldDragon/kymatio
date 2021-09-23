@@ -250,7 +250,7 @@ def precompute_size_scattering(J, Q, T, max_order=2, detail=False):
             return size_order0 + size_order1
 
 
-def compute_meta_scattering(J, Q, J_pad, T, max_order=2):
+def compute_meta_scattering(J, Q, J_pad, T, r_psi=math.sqrt(.5), max_order=2):
     """Get metadata on the transform.
 
     This information specifies the content of each scattering coefficient,
@@ -270,12 +270,12 @@ def compute_meta_scattering(J, Q, J_pad, T, max_order=2):
     T : int
         temporal support of low-pass filter, controlling amount of imposed
         time-shift invariance and maximum subsampling
+    r_psi : float
+        Filter redundancy.
+        See `help(kymatio.scattering1d.filter_bank.calibrate_scattering_filters)`.
     max_order : int, optional
         The maximum order of scattering coefficients to compute.
         Must be either equal to `1` or `2`. Defaults to `2`.
-    xi_min : float, optional
-        Lower bound on `xi` to ensure every bandpass is a valid wavelet
-        (doesn't peak at FFT bin 1) within `2*len(x)` padding.
 
     Returns
     -------
@@ -306,7 +306,7 @@ def compute_meta_scattering(J, Q, J_pad, T, max_order=2):
     """
     xi_min = (2 / 2**J_pad)  # leftmost peak at bin 2
     sigma_low, xi1s, sigma1s, j1s, is_cqt1s, xi2s, sigma2s, j2s, is_cqt2s = \
-        calibrate_scattering_filters(J, Q, T, xi_min=xi_min)
+        calibrate_scattering_filters(J, Q, T, r_psi=r_psi, xi_min=xi_min)
     log2_T = math.floor(math.log2(T))
 
     meta = {}

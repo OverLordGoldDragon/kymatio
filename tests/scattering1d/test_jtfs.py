@@ -16,7 +16,7 @@ from utils import cant_import
 
 # backend to use for all tests (except `test_backends`)
 # note: non-'numpy' skips `test_meta()` and `test_lp_sum()`
-default_backend = ('numpy', 'torch', 'tensorflow')[0]
+default_backend = ('numpy', 'torch', 'tensorflow')[2]
 # set True to execute all test functions without pytest
 run_without_pytest = 1
 # set True to print assertion errors rather than raising them in `test_output()`
@@ -148,8 +148,8 @@ def test_jtfs_vs_ts():
     jtfs_x  = concat_joint(jtfs_x_all)
     jtfs_xs = concat_joint(jtfs_xs_all)  # compare against joint coeffs only
 
-    l2_ts   = l2(ts_x, ts_xs)
-    l2_jtfs = l2(jtfs_x, jtfs_xs)
+    l2_ts   = float(l2(ts_x, ts_xs))
+    l2_jtfs = float(l2(jtfs_x, jtfs_xs))
 
     # max ratio limited by `N`; can do better with longer input
     # and by comparing only against up & down, and via per-coeff basis
@@ -206,7 +206,7 @@ def test_freq_tp_invar():
 
         jtfs_x0 = concat_joint(jtfs_x0_all)
         jtfs_x1 = concat_joint(jtfs_x1_all)
-        global_distances.append(l2(jtfs_x0, jtfs_x1))
+        global_distances.append(float(l2(jtfs_x0, jtfs_x1)))
 
     if metric_verbose:
         print("\nFrequency transposition invariance stats:")
@@ -235,15 +235,15 @@ def test_up_vs_down():
     if metric_verbose:
         print("\nFDTS directional sensitivity; E_down / E_up:")
 
-    r_th = (35, 105)
-    l2_th = (50, 110)
+    m_th = (60, 170)
+    l2_th = (55, 150)
     for i, pad_mode in enumerate(['reflect', 'zero']):
         pad_mode_fr = 'conj-reflect-zero' if pad_mode == 'reflect' else 'zero'
         jtfs = TimeFrequencyScattering1D(shape=N, J=8, Q=8, J_fr=4, F=4, Q_fr=2,
                                          average_fr=True, out_type='dict:array',
                                          pad_mode=pad_mode,
-                                         sampling_filters_fr=(
-                                             'resample', 'resample'),
+                                          sampling_filters_fr=(
+                                              'resample', 'resample'),
                                          pad_mode_fr=pad_mode_fr,
                                          frontend=default_backend)
         Scx = jtfs(x)
@@ -262,7 +262,7 @@ def test_up_vs_down():
                    "Slice mean: {2:<5.1f} -- '{1}' pad").format(
                        r_l2, pad_mode, r_m))
         assert r_l2 > l2_th[i], "{} < {} | '{}'".format(r_l2, l2_th[i], pad_mode)
-        assert r_m  > r_th[i],  "{} < {} | '{}'".format(r_m,  r_th[i],  pad_mode)
+        assert r_m  > m_th[i],  "{} < {} | '{}'".format(r_m,  m_th[i],  pad_mode)
 
 
 def test_sampling_psi_fr_exclude():
@@ -1080,7 +1080,7 @@ def test_reconstruction_torch():
         optimizer.step()
         losses.append(float(loss.detach().cpu().numpy()))
         xn, yn = x.detach().cpu().numpy(), y.detach().cpu().numpy()
-        losses_recon.append(l2(yn, xn))
+        losses_recon.append(float(l2(yn, xn)))
 
     th, th_recon, th_end_ratio = 1e-5, 1.05, 50
     end_ratio = losses[0] / losses[-1]

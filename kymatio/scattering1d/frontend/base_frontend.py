@@ -19,7 +19,8 @@ from ..utils import (compute_border_indices, compute_padding,
 class ScatteringBase1D(ScatteringBase):
     def __init__(self, J, shape, Q=1, T=None, max_order=2, average=True,
             oversampling=0, out_type='array', pad_mode='reflect',
-            max_pad_factor=2, analytic=False, r_psi=math.sqrt(.5), backend=None):
+            max_pad_factor=2, analytic=False, normalize='l1-energy',
+            r_psi=math.sqrt(.5), backend=None):
         super(ScatteringBase1D, self).__init__()
         self.J = J
         self.shape = shape
@@ -32,6 +33,7 @@ class ScatteringBase1D(ScatteringBase):
         self.pad_mode = pad_mode
         self.max_pad_factor = max_pad_factor
         self.analytic = analytic
+        self.normalize = normalize
         self.r_psi = r_psi if isinstance(r_psi, tuple) else (r_psi, r_psi)
         self.backend = backend
 
@@ -49,7 +51,6 @@ class ScatteringBase1D(ScatteringBase):
         self.P_max = 5
         self.eps = 1e-7
         self.criterion_amplitude = 1e-3
-        self.normalize = 'l1'
 
         # check the shape
         if isinstance(self.shape, numbers.Integral):
@@ -78,6 +79,12 @@ class ScatteringBase1D(ScatteringBase):
                 return self.backend.pad(x, self.pad_left, self.pad_right,
                                         self.pad_mode)
         self.pad_fn = pad_fn
+
+        # check `normalize`
+        supported = ('l1', 'l2', 'l1-energy', 'l2-energy')
+        if self.normalize not in supported:
+            raise ValueError("unsupported `normalize`; must be one of: %s"
+                             + ", ".join(supported))
 
         # ensure 2**J <= nextpow2(N)
         mx = 2**math.ceil(math.log2(self.N))
@@ -132,9 +139,10 @@ class ScatteringBase1D(ScatteringBase):
             criterion_amplitude=self.criterion_amplitude, r_psi=self.r_psi,
             sigma0=self.sigma0, alpha=self.alpha, P_max=self.P_max, eps=self.eps)
 
-        # energy norm # TODO
-        # energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
-        #                           self.J, self.log2_T)
+        # energy norm
+        if 'energy' in self.normalize:
+            energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
+                                      self.J, self.log2_T)
         # analyticity
         if self.analytic:
           for psi_fs in (self.psi1_f, self.psi2_f):
@@ -157,7 +165,7 @@ class ScatteringBase1D(ScatteringBase):
             See the documentation for `compute_meta_scattering()`.
         """
         return compute_meta_scattering(self.J, self.Q, self.J_pad, self.T,
-                                       max_order=self.max_order)
+                                       r_psi=self.r_psi, max_order=self.max_order)
 
     def output_size(self, detail=False):
         """Get size of the scattering transform
@@ -272,6 +280,21 @@ class ScatteringBase1D(ScatteringBase):
 
             In case of `average==False`, controls scattering logic for
             `psi_t` pairs in JTFS.
+        normalize : str
+            One of:
+
+                - 'l1': bandpass normalization; all filters' amplitude envelopes
+                  sum to 1 in time domain (for Morlets makes them peak at 1
+                  in frequency domain). `sum(abs(psi)) == 1`.
+                - 'l2': energy normalization; all filters' energies are 1
+                  in time domain; not suitable for scattering.
+                  `sum(abs(psi)**2) == 1`.
+                - 'l1-energy', 'l2-energy': additionally renormalizes the
+                  entire filterbank such that its LP-sum (overlap of
+                  frequency-domain energies) is `<=1` (`<=2` for time scattering
+                  per using only analytic filters, without anti-analytic).
+                  This improves "even-ness" of input's representation, i.e.
+                  no frequency is tiled too great or little.
         r_psi : float / tuple[float]
             See `help(kymatio.scattering1d.utils.calibrate_scattering_filters)`.
         """
@@ -495,7 +518,7 @@ class TimeFrequencyScatteringBase1D():
                  average_fr=False, aligned=True,
                  sampling_filters_fr=('exclude', 'resample'),
                  max_pad_factor_fr=None, pad_mode_fr='conj-reflect-zero',
-                 r_psi=math.sqrt(.5), oversampling_fr=0,
+                 normalize='l1-energy', r_psi=math.sqrt(.5), oversampling_fr=0,
                  out_3D=False, out_type='array', out_exclude=None):
         self.J_fr = J_fr
         self.Q_fr = Q_fr
@@ -507,6 +530,7 @@ class TimeFrequencyScatteringBase1D():
         self.sampling_filters_fr = sampling_filters_fr
         self.max_pad_factor_fr = max_pad_factor_fr
         self.pad_mode_fr = pad_mode_fr
+        self.normalize_fr = normalize
         self.r_psi_fr = r_psi
         self.out_3D = out_3D
         self.out_type = out_type
@@ -599,7 +623,7 @@ class TimeFrequencyScatteringBase1D():
             self.average_fr, self.aligned, self.oversampling_fr,
             self.sampling_filters_fr, self.out_type, self.out_3D,
             self.max_pad_factor_fr, self.pad_mode_fr, self.analytic,
-            self.r_psi_fr, self._n_psi1_f, self.backend)
+            self.normalize_fr, self.r_psi_fr, self._n_psi1_f, self.backend)
         self.finish_creating_filters()
 
         # detach __init__ args, instead access `sc_freq`'s via `__getattr__`
@@ -1496,8 +1520,8 @@ class _FrequencyScatteringBase(ScatteringBase):
                  average_fr=False, aligned=True, oversampling_fr=0,
                  sampling_filters_fr='resample', out_type='array', out_3D=False,
                  max_pad_factor_fr=None, pad_mode_fr='conj-reflect-zero',
-                 analytic=True, r_psi_fr=math.sqrt(.5), n_psi1=None,
-                 backend=None):
+                 analytic=True, normalize_fr='l1-energy', r_psi_fr=math.sqrt(.5),
+                 n_psi1=None, backend=None):
         super(_FrequencyScatteringBase, self).__init__()
         self.N_frs = N_frs
         self.J_fr = J_fr
@@ -1515,6 +1539,7 @@ class _FrequencyScatteringBase(ScatteringBase):
         self.max_pad_factor_fr = max_pad_factor_fr
         self.pad_mode_fr = pad_mode_fr
         self.analytic_fr = analytic
+        self.normalize_fr = normalize_fr
         self.r_psi_fr = r_psi_fr
         self._n_psi1_f = n_psi1
         self.backend = backend
@@ -1531,7 +1556,6 @@ class _FrequencyScatteringBase(ScatteringBase):
         self.P_max = 5
         self.eps = 1e-7
         self.criterion_amplitude = 1e-3
-        self.normalize = 'l1'
         self.sigma_max_to_min_max_ratio = 1.2
 
         # `N_frs` used in scattering, == realized `psi2_f`s
@@ -1680,7 +1704,7 @@ class _FrequencyScatteringBase(ScatteringBase):
                 'subsample_equiv_relative_to_max_pad_init',
                 'average_fr_global_phi', 'sampling_psi_fr', 'sampling_phi_fr',
                 'sigma_max_to_min_max_ratio',
-                'r_psi_fr', 'normalize', 'sigma0', 'alpha', 'P_max', 'eps'))
+                'r_psi_fr', 'normalize_fr', 'sigma0', 'alpha', 'P_max', 'eps'))
 
         # cannot do energy norm with 3 filters, and generally filterbank
         # isn't well-behaved
@@ -1761,8 +1785,9 @@ class _FrequencyScatteringBase(ScatteringBase):
                     del self.phi_f_fr[j_fr]
 
         # energy norm
-        energy_norm_filterbank_fr(self.psi1_f_fr_up, self.psi1_f_fr_down,
-                                  self.phi_f_fr, self.J_fr, self.log2_F)
+        if 'energy' in self.normalize_fr:
+            energy_norm_filterbank_fr(self.psi1_f_fr_up, self.psi1_f_fr_down,
+                                      self.phi_f_fr, self.J_fr, self.log2_F)
 
     def compute_padding_fr(self):
         """Docs in `TimeFrequencyScatteringBase1D`."""
@@ -1884,9 +1909,9 @@ class _FrequencyScatteringBase(ScatteringBase):
     def _compute_J_pad(self, N_fr, Q):
         min_to_pad, pad_phi, pad_psi1, _ = compute_minimum_support_to_pad(
             N_fr, self.J_fr, Q, self.F, pad_mode=self.pad_mode_fr,
-            r_psi=self.r_psi_fr,
+            normalize=self.normalize_fr, r_psi=self.r_psi_fr,
             **self.get_params('sigma0', 'alpha', 'P_max', 'eps',
-                              'criterion_amplitude', 'normalize'))
+                              'criterion_amplitude'))
         if self.average_fr_global_phi:
             min_to_pad = pad_psi1  # ignore phi's padding
             pad_phi = 0
@@ -1924,10 +1949,19 @@ def _check_runtime_args_jtfs(average, average_fr, out_type, out_3D):
         raise RuntimeError("`out_type` must be one of: {} (got {})".format(
             ', '.join(supported), out_type))
 
-def _handle_args_jtfs(oversampling, oversampling_fr, r_psi, out_type):
+def _handle_args_jtfs(oversampling, oversampling_fr, normalize, r_psi, out_type):
     # handle defaults
+    # `oversampling`, `oversampling_fr`
     if oversampling_fr is None:
         oversampling_fr = oversampling
+
+    # `normalize`
+    if isinstance(normalize, tuple):
+        normalize_tm, normalize_fr = normalize
+    else:
+        normalize_tm = normalize_fr = normalize
+
+    # `r_psi`
     if isinstance(r_psi, tuple):
         if len(r_psi) == 2:
             r_psi = (*r_psi, r_psi[-1])
@@ -1936,10 +1970,12 @@ def _handle_args_jtfs(oversampling, oversampling_fr, r_psi, out_type):
     r_psi_tm = r_psi[:2]
     r_psi_fr = r_psi[-1]
 
+    # `out_type`
+    scattering_out_type = out_type.lstrip('dict:')
     # Second-order scattering object for the time variable
     max_order_tm = 2
-    scattering_out_type = out_type.lstrip('dict:')
-    return oversampling_fr, r_psi_tm, r_psi_fr, max_order_tm, scattering_out_type
+    return (oversampling_fr, normalize_tm, normalize_fr, r_psi_tm, r_psi_fr,
+            max_order_tm, scattering_out_type)
 
 
 __all__ = ['ScatteringBase1D', 'TimeFrequencyScatteringBase1D']
