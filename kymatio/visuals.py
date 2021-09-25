@@ -337,7 +337,6 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
                     xlims = (Nmax - xlims[1], Nmax - .2 * xlims[0])
 
         # title
-        show = (zoom != -1) or not up
         if zoom != -1:
             title = title_base % "up" if up else title_base % "down"
         else:
@@ -385,8 +384,6 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
                  vlines=(Nmax//2, dict(color='k', linewidth=1)))
 
         _filterbank_style_axes(ax1, N, xlims, ymax=lp.max()*1.03)
-        if show:
-            plt.show()
 
     # handle `plot_kw`
     if plot_kw is not None:
@@ -436,10 +433,14 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
                       "{}, {}, {}").format(*params)
 
     # plot
-    _, ax0 = plt.subplots(1, 1)
-    _, ax1 = plt.subplots(1, 1)
+    ax0, ax1 = [plt.subplots(1, 1)[1] for _ in range(2)]
     _plot_filters(pup, p0, lp, ax0, ax1, title_base=title_base, up=True)
+    if zoom != -1:
+        plt.show()
+        ax0, ax1 = [plt.subplots(1, 1)[1] for _ in range(2)]
+
     _plot_filters(pdn, p0, lp, ax0, ax1, title_base=title_base, up=False)
+    plt.show()
 
 
 def filterbank_jtfs(jtfs, part='real', zoomed=False, w=1, h=1, borders=False,
