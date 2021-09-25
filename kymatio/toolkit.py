@@ -118,6 +118,9 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None,
         standardized by the same factor - i.e. same `mean` and `std`. `rscaling`
         also accounts for rescaling due to log.
 
+    Regardless, this "channel normalization" has been used with success in
+    variuous settings; above are but points worth noting.
+
     Online computation
     ------------------
 
@@ -153,9 +156,9 @@ def normalize(X, rscaling='l1', mean_axis=(1, 2), std_axis=(1, 2), C=None,
 
     # main transform #########################################################
     if mu is None:
-        # time-sum (integral)
+        # spatial sum (integral)
         Xsum = B.sum(X, axis=-1, keepdims=True)
-        # sample-median
+        # sample median
         mu = B.median(Xsum, axis=0, keepdims=True)
     # rescale
     Xnorm = X / mu
