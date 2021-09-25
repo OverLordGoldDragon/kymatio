@@ -383,7 +383,7 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
                  hlines=(1, dict(color='tab:red', linestyle='--')),
                  vlines=(Nmax//2, dict(color='k', linewidth=1)))
 
-        _filterbank_style_axes(ax1, N, xlims, ymax=lp.max()*1.03)
+            _filterbank_style_axes(ax1, N, xlims, ymax=lp.max()*1.03)
 
     # handle `plot_kw`
     if plot_kw is not None:
@@ -432,12 +432,17 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
         title_base = ("Frequential filterbank | J_fr, Q_fr, F = "
                       "{}, {}, {}").format(*params)
 
-    # plot
-    ax0, ax1 = [plt.subplots(1, 1)[1] for _ in range(2)]
+
+    # plot ###################################################################
+    def make_figs():
+        return ([plt.subplots(1, 1)[1] for _ in range(2)] if lp_sum else
+                (plt.subplots(1, 1)[1], None))
+
+    ax0, ax1 = make_figs()
     _plot_filters(pup, p0, lp, ax0, ax1, title_base=title_base, up=True)
     if zoom != -1:
         plt.show()
-        ax0, ax1 = [plt.subplots(1, 1)[1] for _ in range(2)]
+        ax0, ax1 = make_figs()
 
     _plot_filters(pdn, p0, lp, ax0, ax1, title_base=title_base, up=False)
     plt.show()

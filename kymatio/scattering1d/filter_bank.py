@@ -1469,7 +1469,6 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
 
     passes : int
         Number of times to call this function recursively; see Algorithm.
-        Defaults to 3 if `not uniform`, else 1.
 
     scaling_factors : None / dict[float]
         Used internally if `passes > 1`.

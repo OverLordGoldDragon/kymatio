@@ -153,30 +153,35 @@ def _run_with_cleanup(fn, savename):
                 os.unlink(p)
 
 
-mr = [False]
+
+# create testing objects #####################################################
+if run_without_pytest:
+    sc_tms, jtfss, sc_all, metas, xs, out_tms, out_jtfss, out_all = (
+        make_reusables())
+    G = dict(sc_tms=sc_tms, jtfss=jtfss, sc_all=sc_all, metas=metas,
+             xs=xs, out_tms=out_tms, out_jtfss=out_jtfss, out_all=out_all)
+else:
+    mr = [False]
+    @pytest.fixture(scope='module')
+    def G():
+        if not mr[0]:
+            sc_tms, jtfss, sc_all, metas, xs, out_tms, out_jtfss, out_all = (
+                make_reusables())
+            mr[0] = True
+        return dict(sc_tms=sc_tms, jtfss=jtfss, sc_all=sc_all, metas=metas,
+                    xs=xs, out_tms=out_tms, out_jtfss=out_jtfss, out_all=out_all)
 
 
-@pytest.fixture(scope='module')
-def G():
-    if not mr[0]:
-        sc_tms, jtfss, sc_all, metas, xs, out_tms, out_jtfss, out_all = (
-            make_reusables())
-        mr[0] = True
-    return dict(sc_tms=sc_tms, jtfss=jtfss, sc_all=sc_all, metas=metas,
-                xs=xs, out_tms=out_tms, out_jtfss=out_jtfss, out_all=out_all)
-
-
+# run tests ##################################################################
 if __name__ == '__main__':
-    # sc_tms, jtfss, sc_all, metas, xs, out_tms, out_jtfss, out_all = (
-    #     make_reusables())
     if run_without_pytest:
-        test_filterbank_heatmap()
-        test_filterbank_scattering()
-        test_filterbank_jtfs_1d()
-        test_filterbank_jtfs()
-        test_gif_jtfs()
-        test_gif_jtfs_3D()
-        test_energy_profile_jtfs()
-        test_coeff_distance_jtfs()
+        test_filterbank_heatmap(G)
+        test_filterbank_scattering(G)
+        test_filterbank_jtfs_1d(G)
+        test_filterbank_jtfs(G)
+        test_gif_jtfs(G)
+        test_gif_jtfs_3D(G)
+        test_energy_profile_jtfs(G)
+        test_coeff_distance_jtfs(G)
     else:
         pytest.main([__file__, "-s"])
