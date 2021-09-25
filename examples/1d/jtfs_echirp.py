@@ -24,16 +24,16 @@ x = echirp(N, fmin=64, fmax=N/2)
 # largest scale is 2**9 [samples] / 4096 [samples / sec] == 125 ms
 J = 9
 # 8 bandpass wavelets per octave
-# J*Q ~= 72 total temporal coefficients in first-order scattering
-Q = 16  # TODO
+# J*Q ~= 144 total temporal coefficients in first-order scattering
+Q = 16
 # scale of temporal invariance, 31.25 ms
 T = 2**7
 # 4 frequential octaves
 J_fr = 4
 # 2 bandpass wavelets per octave
 Q_fr = 2
-# scale of frequential invariance, F/Q == 1 cycle per octave
-F = 4
+# scale of frequential invariance, F/Q == 0.5 cycle per octave
+F = 8
 # do frequential averaging to enable 4D concatenation
 average_fr = True
 # frequential padding; 'zero' avoids few discretization artefacts for this example
@@ -66,7 +66,10 @@ imshow(Scx['S1'].squeeze(), abs=1,
 jmeta = jtfs.meta()
 # specify save folder
 savedir = ''
-visuals.gif_jtfs(Scx, jmeta, savedir=savedir, save_images=0, overwrite=1)
+# time between GIF frames (ms)
+duration = 200
+visuals.gif_jtfs(Scx, jmeta, savedir=savedir, save_images=0, overwrite=1,
+                 gif_kw={'duration': duration})
 # Notice how -1 spin coefficients contain nearly all the energy
 # and +1 barely any; this is FDTS discriminability.
 # For ideal FDTS and JTFS, +1 will be all zeros.
