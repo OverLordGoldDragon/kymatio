@@ -914,16 +914,26 @@ class TimeFrequencyScatteringBase1D():
           - Used even with `average_fr=False` (see its docs); this is likewise
             true of `T` for `phi_t * phi_f` and `phi_t * psi_f` pairs.
 
-    implementation : int / None
-        Preset configuration to use. Overrides the following parameters:
+    implementation : int / dict
+        Preset configuration to use (int), or custom (dict). Options & defaults:
 
-            - `average_fr, aligned, out_3D, sampling_filters_fr`
+            - average_fr          = False
+            - aligned             = False
+            - sampling_filters_fr = ('exclude', 'resample')
+            - max_pad_factor_fr   = None
+            - pad_mode_fr         = 'conj-reflect-zero'
+            - normalize           = 'l1-energy'
+            - out_3D              = False
+            - out_type            = 'array'
+            - out_exclude         = None
 
-        Defaults to `None`, and any `None` argument above will default to
-        that of `implementation=1`.
-        See `help(kymatio.toolkit.pack_coeffs_jtfs)` for further information.
+        See their respespective docs. It's just additional keyword arguments,
+        packed into a dictionary. Example use:
 
-        **Implementations:**
+            - implementation = 1
+            - implementation = dict(average_fr=True, out_type='dict:array')
+
+        **Presets**
 
             1: Standard for 1D convs. `(n1_fr * n2 * n1, t)`.
               - average_fr = False
@@ -951,16 +961,33 @@ class TimeFrequencyScatteringBase1D():
               - sampling_psi_fr = 'recalibrate'
               - sampling_phi_fr = 'recalibrate'
 
+        **Presets guide**
+
+        1-3 are the standard variants. Safe to use in general case.
+        Differences are in the kinds of networks we'll feed to, and the kinds of
+        features we'll extract:
+
+            1. Everything but time is packed (unrolled/flattened) along channels
+            2. Time and frequency are packed spatially, enabling exploiting
+               time-frequency geometry
+            3. Time, frequency, and quefrency are packed spatially, enabling
+               exploiting cross-quefrency dependencies
+
+        See `help(kymatio.toolkit.pack_coeffs_jtfs)` for further info.
+
+        **Advanced guide**
+
+        `out_structure` refers to packing output coefficients via
+        `pack_coeffs_jtfs(..., out_structure)` (see its docs). This zero-pads and
+        reshapes coefficients, but does not affect their values or computation
+        in any way. (Thus, 3==2 except for shape). Requires `out_type`
+        'dict:list' (default) or 'dict:array'; if 'dict:array' is passed,
+        will use it instead.
+
         `'exclude'` in `sampling_psi_fr` can be replaced with `'resample'`,
         which yields significantly more coefficients and doens't lose information
         (which `'exclude'` strives to minimize), but is slower and the
         coefficients are mostly "synthetic zeros" and uninformative.
-
-        `out_structure` refers to packing output coefficients via
-        `pack_coeffs_jtfs(..., out_structure)`. This zero-pads and reshapes
-        coefficients, but does not affect their values or computation in any way.
-        (Thus, 3==2 except for shape). Requires `out_type` 'dict:list' (default)
-        or 'dict:array'; if 'dict:array' is passed, will use it instead.
 
         `5` also makes sense with `sampling_phi_fr = 'resample'` and small `F`
         (small enough to let `J_pad_frs` drop below max), but the argument
