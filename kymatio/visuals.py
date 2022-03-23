@@ -172,7 +172,7 @@ def filterbank_scattering(scattering, zoom=0, filterbank=True, lp_sum=False,
         scattering = Scattering1D(shape=2048, J=8, Q=8)
         filterbank_scattering(scattering)
     """
-    def _plot_filters(ps, p0, lp, title):
+    def _plot_filters(ps, p0, lp, J, title):
         # determine plot parameters ##########################################
         Nmax = len(ps[0][0])
         # x-axis zoom
@@ -193,10 +193,9 @@ def filterbank_scattering(scattering, zoom=0, filterbank=True, lp_sum=False,
             # Morlets
             for p in ps:
                 j = p['j']
-                plot(p[0], color=colors[j], linestyle=linestyles[j], w=.69,
-                     h=.85)
+                plot(p[0], color=colors[j], linestyle=linestyles[j], w=.69, h=.85)
             # vertical lines (octave bounds)
-            plot([], vlines=([Nmax//2**j for j in range(1, scattering.J + 2)],
+            plot([], vlines=([Nmax//2**j for j in range(1, J + 2)],
                               dict(color='k', linewidth=1)), ax=ax)
             # lowpass
             if isinstance(p0[0], list):
@@ -261,19 +260,21 @@ def filterbank_scattering(scattering, zoom=0, filterbank=True, lp_sum=False,
                 lp2 += np.abs(p0_longest)**2
 
     # title & plot
+    (Q0, Q1), (J0, J1) = scattering.Q, scattering.J
     if first_order:
         title = "First-order filterbank | J, Q1, T = {}, {}, {}".format(
-            scattering.J, scattering.Q[0], scattering.T)
-        _plot_filters(p1, p0, lp1, title=title)
+            J0, Q0, scattering.T)
+        _plot_filters(p1, p0, lp1, J0, title=title)
 
     if second_order:
         title = "Second-order filterbank | J, Q2, T = {}, {}, {}".format(
-            scattering.J, scattering.Q[1], scattering.T)
-        _plot_filters(p2, p0, lp2, title=title)
+            J1, Q1, scattering.T)
+        _plot_filters(p2, p0, lp2, J1, title=title)
 
 
-def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
-                       lp_phi=True, center_dc=None, plot_kw=None):
+def filterbank_jtfs_1d(jtfs, zoom=0, psi_id=0, filterbank=True, lp_sum=False,
+                       lp_phi=True, center_dc=None, both_spins=True,
+                       plot_kw=None):
     """Visualize JTFS frequential filterbank in frequency domain, 1D.
 
     Parameters
@@ -317,7 +318,7 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
     def _plot_filters(ps, p0, lp, fig0, ax0, fig1, ax1, title_base, up):
         # determine plot parameters ##########################################
         # vertical lines (octave bounds)
-        Nmax = len(ps[0][j0])
+        Nmax = len(ps[psi_id][0])
         j_dists = np.array([Nmax//2**j for j in range(1, jtfs.J_fr + 1)])
         if up:
             vlines = (Nmax//2 + j_dists if center_dc else
@@ -349,24 +350,22 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
         # plot filterbank ####################################################
         if filterbank:
             # bandpasses
-            for p in ps:
-                if j0 not in p:  # sampling_psi_fr == 'exclude'
-                    continue
-                j = p['j'][j0]
-                pplot = p[j0].squeeze()
+            for n1_fr, p in enumerate(ps[psi_id]):
+                j = ps['j'][psi_id][n1_fr]
+                pplot = p.squeeze()
                 if center_dc:
                     pplot = ifftshift(pplot)
                     pplot[1:] = pplot[1:][::-1]
                 plot(pplot, color=colors[j], linestyle=linestyles[j], ax=ax0)
             # lowpass
-            p0plot = p0[j0][0].squeeze()
+            p0plot = p0[0][0][0].squeeze()  # TODO
             if center_dc:
                 p0plot = ifftshift(p0plot)
                 p0plot[1:] = p0plot[1:][::-1]
             plot(p0plot, color='k', **plot_kw, ax=ax0, fig=fig0,
                  vlines=(vlines, dict(color='k', linewidth=1)))
 
-        N = len(p[j0])
+        N = len(p)
         _filterbank_style_axes(ax0, N, xlims, zoom=zoom, is_jtfs=True)
 
         # plot LP sum ########################################################
@@ -417,12 +416,10 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
     lp = 0
     if lp_sum:
         for psi1_f in (pup, pdn):
-            for p in psi1_f:
-                if j0 not in p:  # sampling_psi_fr == 'exclude'
-                    continue
-                lp += np.abs(p[j0])**2
+            for p in psi1_f[psi_id]:
+                lp += np.abs(p)**2
         if lp_phi:
-            lp += np.abs(p0[j0][0])**2
+            lp += np.abs(p0[0][0][0])**2  # TODO match pad
 
     # title
     params = (jtfs.J_fr, jtfs.Q_fr, jtfs.F)
@@ -440,11 +437,12 @@ def filterbank_jtfs_1d(jtfs, zoom=0, j0=0, filterbank=True, lp_sum=False,
                 (plt.subplots(1, 1), (None, None)))
 
     (fig0, ax0), (fig1, ax1) = make_figs()
-    _plot_filters(pup, p0, lp, fig0, ax0, fig1, ax1, title_base=title_base,
-                  up=True)
-    if zoom != -1:
-        plt.show()
-        (fig0, ax0), (fig1, ax1) = make_figs()
+    if both_spins:
+        _plot_filters(pup, p0, lp, fig0, ax0, fig1, ax1, title_base=title_base,
+                      up=True)
+        if zoom != -1:
+            plt.show()
+            (fig0, ax0), (fig1, ax1) = make_figs()
 
     _plot_filters(pdn, p0, lp, fig0, ax0, fig1, ax1, title_base=title_base,
                   up=False)
@@ -1609,12 +1607,12 @@ def hist(x, bins=500, title=None, show=0, stats=0, ax=None, fig=None,
         return [(("%.3e" % n) if (abs(n) > 1e3 or abs(n) < 1e-3) else
                  ("%.3f" % n)) for n in nums]
 
-    x = np.asarray(x)
-    _ = plt.hist(x.ravel(), bins=bins)
-    _title(title)
-
     ax  = ax  or plt.gca()
     fig = fig or plt.gcf()
+
+    x = np.asarray(x)
+    _ = ax.hist(x.ravel(), bins=bins)
+    _title(title, ax)
     _scale_plot(fig, ax, show=show, w=w, h=h, xlims=xlims, ylims=ylims,
                 xlabel=xlabel, ylabel=ylabel)
     if show:

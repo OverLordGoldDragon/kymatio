@@ -19,7 +19,8 @@ class ScatteringTorch1D(ScatteringTorch, ScatteringBase1D):
         ScatteringBase1D.__init__(self, J, shape, Q, T, max_order, average,
                 oversampling, out_type, pad_mode, max_pad_factor, analytic,
                 normalize, r_psi, backend)
-        ScatteringBase1D._instantiate_backend(self, 'kymatio.scattering1d.backend.')
+        ScatteringBase1D._instantiate_backend(self,
+                                              'kymatio.scattering1d.backend.')
         ScatteringBase1D.build(self)
         ScatteringBase1D.create_filters(self)
         if register_filters:
@@ -110,8 +111,10 @@ class ScatteringTorch1D(ScatteringTorch, ScatteringBase1D):
         if x.device.type != device:
             x = x.to(device)
 
-        S = scattering1d(x, self.pad_fn, self.backend.unpad, self.backend, self.J, self.log2_T, self.psi1_f, self.psi2_f,
-                         self.phi_f, max_order=self.max_order, average=self.average,
+        S = scattering1d(x, self.pad_fn, self.backend.unpad, self.backend, self.J,
+                         self.log2_T, self.psi1_f, self.psi2_f,
+                         self.phi_f, max_order=self.max_order,
+                         average=self.average,
                          ind_start=self.ind_start, ind_end=self.ind_end,
                          oversampling=self.oversampling,
                          size_scattering=size_scattering,
@@ -137,13 +140,14 @@ ScatteringTorch1D._document()
 class TimeFrequencyScatteringTorch1D(TimeFrequencyScatteringBase1D,
                                      ScatteringTorch1D):
     def __init__(self, J, shape, Q, J_fr=None, Q_fr=2, T=None, F=None,
-                 implementation=None, average=True, average_fr=False, oversampling=0,
-                 oversampling_fr=None, aligned=True,
-                 sampling_filters_fr=('exclude', 'resample'), out_type="array",
-                 out_3D=False, out_exclude=None, pad_mode='reflect',
-                 max_pad_factor=2, max_pad_factor_fr=None,
-                 pad_mode_fr='conj-reflect-zero', analytic=True,
-                 normalize='l1-energy', r_psi=math.sqrt(.5), backend="torch"):
+                 implementation=None, average=True, average_fr=False,
+                 oversampling=0, oversampling_fr=None, aligned=True,
+                 F_kind='gauss', sampling_filters_fr=('exclude', 'resample'),
+                 out_type="array", out_3D=False, out_exclude=None,
+                 paths_exclude=None, pad_mode='reflect', max_pad_factor=2,
+                 max_pad_factor_fr=None, pad_mode_fr='conj-reflect-zero',
+                 analytic=True, normalize='l1-energy', r_psi=math.sqrt(.5),
+                 backend="torch"):
         (oversampling_fr, normalize_tm, normalize_fr, r_psi_tm, r_psi_fr,
          max_order_tm, scattering_out_type) = (
             _handle_args_jtfs(oversampling, oversampling_fr, normalize, r_psi,
@@ -155,9 +159,10 @@ class TimeFrequencyScatteringTorch1D(TimeFrequencyScatteringBase1D,
             normalize_tm, r_psi=r_psi_tm, register_filters=False, backend=backend)
 
         TimeFrequencyScatteringBase1D.__init__(
-            self, J_fr, Q_fr, F, implementation, average_fr, aligned,
+            self, J_fr, Q_fr, F, implementation, average_fr, aligned, F_kind,
             sampling_filters_fr, max_pad_factor_fr, pad_mode_fr, normalize_tm,
-            r_psi_fr, oversampling_fr, out_3D, out_type, out_exclude)
+            r_psi_fr, oversampling_fr, out_3D, out_type, out_exclude,
+            paths_exclude)
         TimeFrequencyScatteringBase1D.build(self)
         self.register_filters()
 
@@ -175,26 +180,47 @@ class TimeFrequencyScatteringTorch1D(TimeFrequencyScatteringBase1D,
         n = n0
         for name in filter_names:
             p_f = getattr(obj, name)
-            if isinstance(p_f, dict):
-                for k in p_f:
-                    if isinstance(k, int):
-                        if isinstance(p_f[k], list):
-                            for k_sub in range(len(p_f[k])):
-                                p_f[k][k_sub] = torch.from_numpy(
-                                    p_f[k][k_sub]).float()
-                                self.register_buffer(f'tensor{n}', p_f[k][k_sub])
-                                n += 1
-                        else:
-                            p_f[k] = torch.from_numpy(p_f[k]).float()
-                            self.register_buffer(f'tensor{n}', p_f[k])
+            if name.startswith('psi') and 'fr' not in name:
+                for n_tm in range(len(p_f)):
+                    for k in p_f[n_tm]:
+                        if not isinstance(k, int):
+                            continue
+                        p_f[n_tm][k] = torch.from_numpy(p_f[n_tm][k]).float()
+                        self.register_buffer(f'tensor{n}', p_f[n_tm][k])
+                        n += 1
+            elif name.startswith('psi') and 'fr' in name:
+                for psi_id in p_f:
+                    if not isinstance(psi_id, int):
+                        continue
+                    for n1_fr in range(len(p_f[psi_id])):
+                        p_f[psi_id][n1_fr] = torch.from_numpy(
+                            p_f[psi_id][n1_fr]).float()
+                        self.register_buffer(f'tensor{n}', p_f[psi_id][n1_fr])
+                        n += 1
+            elif name == 'phi_f':
+                for trim_tm in p_f:
+                    if not isinstance(trim_tm, int):
+                        continue
+                    for k in range(len(p_f[trim_tm])):
+                        p_f[trim_tm][k] = torch.from_numpy(p_f[trim_tm][k]
+                                                           ).float()
+                        self.register_buffer(f'tensor{n}', p_f[trim_tm][k])
+                        n += 1
+            elif name == 'phi_f_fr':
+                for log2_F_phi_diff in p_f:
+                    if not isinstance(log2_F_phi_diff, int):
+                        continue
+                    for pad_diff in p_f[log2_F_phi_diff]:
+                        for sub in range(len(p_f[log2_F_phi_diff][pad_diff])):
+                            p_f[log2_F_phi_diff][pad_diff][sub] = (
+                                torch.from_numpy(
+                                    p_f[log2_F_phi_diff][pad_diff][sub]).float())
+                            self.register_buffer(
+                                f'tensor{n}', p_f[log2_F_phi_diff][pad_diff][sub])
                             n += 1
-            else:  # list
-                for p_f_sub in p_f:
-                    for k in p_f_sub:
-                        if isinstance(k, int):
-                            p_f_sub[k] = torch.from_numpy(p_f_sub[k]).float()
-                            self.register_buffer(f'tensor{n}', p_f_sub[k])
-                            n += 1
+            else:
+                raise ValueError("unknown filter name: %s" % name)
+
         n_final = n
         return n_final
 
@@ -211,22 +237,39 @@ class TimeFrequencyScatteringTorch1D(TimeFrequencyScatteringBase1D,
         n = n0
         for name in filter_names:
             p_f = getattr(obj, name)
-            if isinstance(p_f, dict):
-                for k in p_f:
-                    if isinstance(k, int):
-                        if isinstance(p_f[k], list):
-                            for k_sub in range(len(p_f[k])):
-                                p_f[k][k_sub] = buffer_dict[f'tensor{n}']
-                                n += 1
-                        else:
-                            p_f[k] = buffer_dict[f'tensor{n}']
+            if name.startswith('psi') and 'fr' not in name:
+                for n_tm in range(len(p_f)):
+                    for k in p_f[n_tm]:
+                        if not isinstance(k, int):
+                            continue
+                        p_f[n_tm][k] = buffer_dict[f'tensor{n}']
+                        n += 1
+            elif name.startswith('psi') and 'fr' in name:
+                for psi_id in p_f:
+                    if not isinstance(psi_id, int):
+                        continue
+                    for n1_fr in range(len(p_f[psi_id])):
+                        p_f[psi_id][n1_fr] = buffer_dict[f'tensor{n}']
+                        n += 1
+            elif name == 'phi_f':
+                for trim_tm in p_f:
+                    if not isinstance(trim_tm, int):
+                        continue
+                    for k in range(len(p_f[trim_tm])):
+                        p_f[trim_tm][k] = buffer_dict[f'tensor{n}']
+                        n += 1
+            elif name == 'phi_f_fr':
+                for log2_F_phi_diff in p_f:
+                    if not isinstance(log2_F_phi_diff, int):
+                        continue
+                    for pad_diff in p_f[log2_F_phi_diff]:
+                        for sub in range(len(p_f[log2_F_phi_diff][pad_diff])):
+                            p_f[log2_F_phi_diff
+                                ][pad_diff][sub] = buffer_dict[f'tensor{n}']
                             n += 1
-            else:  # list
-                for p_f_sub in p_f:
-                    for k in p_f_sub:
-                        if isinstance(k, int):
-                            p_f_sub[k] = buffer_dict[f'tensor{n}']
-                            n += 1
+            else:
+                raise ValueError("unknown filter name: %s" % name)
+
         n_final = n
         return n_final
 
@@ -268,9 +311,11 @@ class TimeFrequencyScatteringTorch1D(TimeFrequencyScatteringBase1D,
             oversampling=self.oversampling,
             oversampling_fr=self.oversampling_fr,
             aligned=self.aligned,
+            F_kind=self.F_kind,
             out_type=self.out_type,
             out_3D=self.out_3D,
             out_exclude=self.out_exclude,
+            paths_exclude=self.paths_exclude,
             pad_mode=self.pad_mode)
         if self.out_structure is not None:
             S = pack_coeffs_jtfs(S, self.meta(), self.out_structure,

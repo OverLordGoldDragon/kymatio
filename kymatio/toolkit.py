@@ -718,8 +718,8 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         n2s = np.unique(n2s_all)
 
         for n2 in n2s:
-            packed[pair].append([])
             n1_frs_all = nsp[n2s_all == n2, 1]
+            packed[pair].append([])
             n1_frs = np.unique(n1_frs_all)
             n_n1_frs_max = max(n_n1_frs_max, len(n1_frs))
 
@@ -848,7 +848,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
 
     # `3` won't pack `phi_f` with `psi_f` so can't pack `phi_t * phi_f` along
     # `phi_t * psi_f`, must pack with `psi_t * phi_f` instead
-    if structure == 3:
+    if structure == 3 and c_phi_t is not None:
         _len = len(c_phi_t[0])
         combined_phi_f.insert(0, c_phi_t[0][_len//2:_len//2 + 1])
 
@@ -1352,6 +1352,8 @@ def est_energy_conservation(x, sc=None, T=None, F=None, J=None, J_fr=None,
                 backend = 'torch'
             except:
                 backend = 'numpy'
+        elif backend == 'torch':
+            import torch
         kw = dict(shape=N, J=int(np.log2(N)), T=T, max_pad_factor=max_pad_factor,
                   pad_mode=pad_mode, Q=Q, frontend=backend, r_psi=r_psi)
         if not jtfs:
@@ -1516,7 +1518,7 @@ def validate_filterbank_tm(sc=None, psi1_f=None, psi2_f=None, phi_f=None,
 
 
 def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
-                           phi_f_fr=None, j0=0, criterion_amplitude=1e-3,
+                           phi_f_fr=None, psi_id=0, criterion_amplitude=1e-3,
                            verbose=True):
     """Runs `validate_filterbank()` on frequential filters of JTFS.
 
@@ -1560,9 +1562,9 @@ def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
         psi1_f_fr_up, psi1_f_fr_down, phi_f_fr = [
             getattr(sc, k) for k in
             ('psi1_f_fr_up', 'psi1_f_fr_down', 'phi_f_fr')]
-    psi1_f_fr_up, psi1_f_fr_down = [[p[j0] for p in ps] for ps in
-                                    (psi1_f_fr_up, psi1_f_fr_down)]
-    phi_f_fr = phi_f_fr[j0][0]
+
+    psi1_f_fr_up, psi1_f_fr_down = psi1_f_fr_up[psi_id], psi1_f_fr_down[psi_id]
+    phi_f_fr = phi_f_fr[0][0][0]
 
     if verbose:
         print("\n// SPIN UP")
@@ -2070,13 +2072,13 @@ def validate_filterbank(psi_fs, phi_f=None, criterion_amplitude=1e-3,
 
 
 #### energy & distance #######################################################
-def energy(x, kind='l2'):
+def energy(x, axis=None, kind='l2'):
     """Compute energy. L1==`sum(abs(x))`, L2==`sum(abs(x)**2)` (so actually L2^2).
     """
     x = x['coef'] if isinstance(x, dict) else x
     B = ExtendedUnifiedBackend(x)
-    out = (B.norm(x, ord=1) if kind == 'l1' else
-           B.norm(x, ord=2)**2)
+    out = (B.norm(x, ord=1, axis=axis) if kind == 'l1' else
+           B.norm(x, ord=2, axis=axis)**2)
     if np.prod(out.shape) == 1:
         out = float(out)
     return out
@@ -2465,7 +2467,10 @@ class ExtendedUnifiedBackend():
         if self.backend_name == 'numpy':
             out = np.min(x, axis=axis, keepdims=keepdims)
         elif self.backend_name == 'torch':
-            out = self.B.min(x, dim=axis, keepdim=keepdims)
+            kw = {'dim': axis} if axis is not None else {}
+            if keepdims:
+                kw['keepdim'] = True
+            out = self.B.min(x, **kw)
         else:
             out = self.B.math.reduce_min(x, axis=axis, keepdims=keepdims)
         return out

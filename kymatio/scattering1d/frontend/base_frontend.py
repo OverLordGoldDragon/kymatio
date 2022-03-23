@@ -3,12 +3,16 @@ import math
 import numbers
 import warnings
 from types import FunctionType
+from copy import deepcopy
 
 import numpy as np
 
 from ..filter_bank import (scattering_filter_factory, periodize_filter_fourier,
                            psi_fr_factory, phi_fr_factory,
-                           energy_norm_filterbank_tm, energy_norm_filterbank_fr)
+                           energy_norm_filterbank_tm, energy_norm_filterbank_fr,
+                           calibrate_scattering_filters,
+                           _recalibrate_psi_fr, morlet_1d,
+                           compute_temporal_support, compute_temporal_width)
 from ..utils import (compute_border_indices, compute_padding,
                      compute_minimum_support_to_pad,
                      compute_meta_scattering,
@@ -22,7 +26,7 @@ class ScatteringBase1D(ScatteringBase):
             max_pad_factor=2, analytic=False, normalize='l1-energy',
             r_psi=math.sqrt(.5), backend=None):
         super(ScatteringBase1D, self).__init__()
-        self.J = J
+        self.J = J if isinstance(J, tuple) else (J, J)
         self.shape = shape
         self.Q = Q if isinstance(Q, tuple) else (Q, 1)
         self.T = T
@@ -86,15 +90,17 @@ class ScatteringBase1D(ScatteringBase):
             raise ValueError("unsupported `normalize`; must be one of: %s"
                              + ", ".join(supported))
 
+        # ensure J2 <= J1
+        # assert self.J[1] <= self.J[0], self.J
         # ensure 2**J <= nextpow2(N)
         mx = 2**math.ceil(math.log2(self.N))
-        if 2**(self.J) > mx:
+        if 2**(self.J[0]) > mx:
             raise ValueError(("2**J cannot exceed input length (rounded up to "
-                              "pow2) (got {} > {})".format(2**(self.J), mx)))
+                              "pow2) (got {} > {})".format(2**(self.J[0]), mx)))
 
         # check T or set default
         if self.T is None:
-            self.T = 2**(self.J)
+            self.T = 2**(self.J[0])
         elif self.T == 'global':
             self.T == mx
         elif self.T > self.N:
@@ -107,7 +113,7 @@ class ScatteringBase1D(ScatteringBase):
 
         # Compute the minimum support to pad (ideally)
         min_to_pad, pad_phi, pad_psi1, pad_psi2 = compute_minimum_support_to_pad(
-            self.N, self.J, self.Q, self.T, r_psi=self.r_psi,
+            self.N, self.J[0], self.Q, self.T, r_psi=self.r_psi,
             sigma0=self.sigma0, alpha=self.alpha, P_max=self.P_max, eps=self.eps,
             criterion_amplitude=self.criterion_amplitude,
             normalize=self.normalize, pad_mode=self.pad_mode)
@@ -124,7 +130,7 @@ class ScatteringBase1D(ScatteringBase):
         self.pad_left, self.pad_right = compute_padding(self.J_pad, self.N)
         # compute start and end indices
         self.ind_start, self.ind_end = compute_border_indices(
-            self.log2_T, self.J, self.pad_left, 2**self.J_pad - self.pad_right)
+            self.log2_T, self.J[0], self.pad_left, 2**self.J_pad - self.pad_right)
 
         # record whether configuration yields second order filters
         meta = ScatteringBase1D.meta(self)
@@ -525,11 +531,12 @@ class ScatteringBase1D(ScatteringBase):
 
 class TimeFrequencyScatteringBase1D():
     def __init__(self, J_fr=None, Q_fr=2, F=None, implementation=None,
-                 average_fr=False, aligned=True,
+                 average_fr=False, aligned=True, F_kind='gauss',
                  sampling_filters_fr=('exclude', 'resample'),
                  max_pad_factor_fr=None, pad_mode_fr='conj-reflect-zero',
                  normalize='l1-energy', r_psi=math.sqrt(.5), oversampling_fr=0,
-                 out_3D=False, out_type='array', out_exclude=None):
+                 out_3D=False, out_type='array', out_exclude=None,
+                 paths_exclude=None):
         self.J_fr = J_fr
         self.Q_fr = Q_fr
         self.F = F
@@ -537,6 +544,7 @@ class TimeFrequencyScatteringBase1D():
         self.average_fr = average_fr
         self.oversampling_fr = oversampling_fr
         self.aligned = aligned
+        self.F_kind = F_kind
         self.sampling_filters_fr = sampling_filters_fr
         self.max_pad_factor_fr = max_pad_factor_fr
         self.pad_mode_fr = pad_mode_fr
@@ -545,6 +553,7 @@ class TimeFrequencyScatteringBase1D():
         self.out_3D = out_3D
         self.out_type = out_type
         self.out_exclude = out_exclude
+        self.paths_exclude = paths_exclude
 
     def build(self):
         """Check args and instantiate `_FrequencyScatteringBase` object
@@ -636,6 +645,28 @@ class TimeFrequencyScatteringBase1D():
             self.normalize_fr, self.r_psi_fr, self._n_psi1_f, self.backend)
         self.finish_creating_filters()
 
+        # handle `paths_exclude`
+        if self.paths_exclude is None:
+            self.paths_exclude = {}
+        else:
+            psis = {'n2': self.psi2_f, 'n1_fr': self.psi1_f_fr_up}
+            supported = list(psis)
+            for p_name in self.paths_exclude:
+                assert p_name in supported, (p_name, supported)
+                self.paths_exclude[p_name] = list(self.paths_exclude[p_name])
+                for i, n in enumerate(self.paths_exclude[p_name]):
+                    if n < 0:
+                        self.paths_exclude[p_name][i] = len(psis[p_name]) - n
+                    if p_name == 'n2':
+                        n = self.paths_exclude[p_name][i]
+                        n_j2_0 = [n2 for n2 in range(len(self.psi2_f))
+                                  if self.psi2_f[n2]['j'] == 0]
+                        if n in n_j2_0:
+                            warnings.warn(
+                                ("`paths_exclude['n2']` includes `{}`, which "
+                                "was already excluded (alongside {}) per having "
+                                "j2==0.").format(n, ', '.join(map(str, n_j2_0))))
+
         # detach __init__ args, instead access `scf`'s via `__getattr__`
         # this is so that changes in attributes are reflected here
         init_args = ('J_fr', 'Q_fr', 'F', 'average_fr', 'oversampling_fr',
@@ -652,9 +683,18 @@ class TimeFrequencyScatteringBase1D():
         for n2 in range(len(self.psi2_f)):
             j2 = self.psi2_f[n2]['j']
             max_freq_nrows = 0
-            for n1 in range(len(self.psi1_f)):
-                if j2 > self.psi1_f[n1]['j']:
-                    max_freq_nrows += 1
+            if j2 != 0:
+                for n1 in range(len(self.psi1_f)):
+                    if j2 > self.psi1_f[n1]['j']:
+                        max_freq_nrows += 1
+                # add rows for `j2 >= j1` up to `nextpow2` of current number
+                # to not change frequential padding scales
+                max_freq_nrows_at_2gt1 = max_freq_nrows
+                p2up_nrows = int(2**math.ceil(math.log2(max_freq_nrows_at_2gt1)))
+                for n1 in range(len(self.psi1_f)):
+                    if (j2 == self.psi1_f[n1]['j'] and
+                            max_freq_nrows < p2up_nrows):
+                        max_freq_nrows += 1
             N_frs.append(max_freq_nrows)
         return N_frs
 
@@ -676,7 +716,7 @@ class TimeFrequencyScatteringBase1D():
             if not isinstance(k, int):
                 phi_f[k] = v
 
-        diff = min(self.J - self.log2_T, self.J_pad - self.N_scale)
+        diff = min(self.J[0] - self.log2_T, self.J_pad - self.N_scale)
         if diff > 0:
             for trim_tm in range(1, diff + 1):
                 # subsample in Fourier <-> trim in time
@@ -691,7 +731,7 @@ class TimeFrequencyScatteringBase1D():
                 pad_left, pad_right = compute_padding(self.J_pad - trim_tm,
                                                       self.N)
                 start, end = compute_border_indices(
-                    self.log2_T, self.J, pad_left, pad_left + self.N)
+                    self.log2_T, self.J[0], pad_left, pad_left + self.N)
                 ind_start[trim_tm] = start
                 ind_end[trim_tm] = end
         self.ind_start, self.ind_end = ind_start, ind_end
@@ -707,21 +747,19 @@ class TimeFrequencyScatteringBase1D():
         meta : dictionary
             See `help(kymatio.scattering1d.utils.compute_meta_jtfs)`.
         """
-        return compute_meta_jtfs(self.J_pad, self.J, self.Q, self.J_fr, self.Q_fr,
-                                 self.T, self.F, self.aligned, self.out_3D,
-                                 self.out_type, self.out_exclude,
-                                 self.sampling_filters_fr, self.average,
-                                 self.average_global, self.average_global_phi,
-                                 self.oversampling, self.r_psi, self.scf)
+        return compute_meta_jtfs(self.J_pad, self.J, self.Q, self.T, self.r_psi,
+                                 self.sigma0, self.average, self.average_global,
+                                 self.average_global_phi, self.oversampling,
+                                 self.out_exclude, self.paths_exclude, self.scf)
 
     @property
     def fr_attributes(self):
         """Exposes `scf`'s attributes via main object."""
         return ('J_fr', 'Q_fr', 'N_frs', 'N_frs_max', 'N_frs_min',
-                'N_fr_scales_max', 'N_fr_scales_min',
-                'J_pad_frs', 'J_pad_frs_max', 'J_pad_frs_max_init', 'average_fr',
-                'average_fr_global', 'aligned', 'oversampling_fr', 'F', 'log2_F',
-                'max_order_fr', 'max_pad_factor_fr', 'out_3D',
+                'N_fr_scales_max', 'N_fr_scales_min', 'scale_diffs', 'psi_ids',
+                'J_pad_frs', 'J_pad_frs_max', 'J_pad_frs_max_init',
+                'average_fr', 'average_fr_global', 'aligned', 'oversampling_fr',
+                'F', 'log2_F', 'max_order_fr', 'max_pad_factor_fr', 'out_3D',
                 'sampling_filters_fr', 'sampling_psi_fr', 'sampling_phi_fr',
                 'phi_f_fr', 'psi1_f_fr_up', 'psi1_f_fr_down')
 
@@ -1214,10 +1252,11 @@ class TimeFrequencyScatteringBase1D():
         `N_frs` without `0`s.
 
     N_frs_max_all : int
-        `== _n_psi1_f`. Used to compute `_J_pad_frs_fo` (unused quantity).
+        `== _n_psi1_f`. Used to compute `_J_pad_frs_fo` (unused quantity),
+        and `n_zeros` in `_pad_conj_reflect_zero` (`core/timefreq...`).
 
     N_fr_scales : list[int]
-        `== nextpow2(N_frs)`. Fitlers are calibrated relative to these
+        `== nextpow2(N_frs)`. Filters are calibrated relative to these
         (for 'exclude' & 'recalibrate' `sampling_psi_fr`).
 
     N_fr_scales_max : int
@@ -1276,7 +1315,7 @@ class TimeFrequencyScatteringBase1D():
 
     J_pad_frs_max_init : int
         Set as reference for computing other `J_pad_fr`, is equal to
-        `max(J_pad_frs)` with `unrestricted_pad_fr`.
+        `max(J_pad_frs)` if `unrestricted_pad_fr`.
 
     J_pad_frs_max : int
         `== max(J_pad_frs)`.
@@ -1514,7 +1553,7 @@ class TimeFrequencyScatteringBase1D():
     or one below maximum, this happens automatically, so this only loses speed
     relative to small `J_fr`.
 
-    Illustrating, consider `N_fr, width(psi_fr_widest) -> J_pad_fr`:
+    Illustrating, consider `N_fr, width(psi_fr_widest) -> 2**J_pad_fr`:
     ::
 
         33, 16 -> 64   # J_fr == 2 below max
@@ -1522,7 +1561,7 @@ class TimeFrequencyScatteringBase1D():
         33, 64 -> 128  # J_fr == max
         63, 64 -> 128  # J_fr == max
 
-    Non-uniqueness example, w/ # `(J_pad_fr, N_fr_scales)`:
+    Non-uniqueness example, w/ # `(J_pad_fr, N_fr_scale)`:
     ::
 
         33, 4 -> 64  # `(6, 6)`
@@ -1579,10 +1618,16 @@ class _FrequencyScatteringBase(ScatteringBase):
         self.backend = backend
 
         self.build()
-        self.create_phi_filters()
+        self.create_init_psi_filters()
+        self.compute_unpadding_fr()
+        self.compute_stride_fr()
         self.compute_padding_fr()
         self.create_psi_filters()
+        self.create_phi_filters()
         self.adjust_padding_and_filters()
+
+        # TODO doc: F_kind = 'fir' still computes with 'gauss' for `phi_f` pairs
+        # TODO: down -> dn?
 
     def build(self):
         self.sigma0 = 0.1
@@ -1608,9 +1653,19 @@ class _FrequencyScatteringBase(ScatteringBase):
         # smallest scale is also smallest possible maximum padding
         # (cannot be overridden by `max_pad_factor_fr`)
         self.N_fr_scales_min = min(s for s in self.N_fr_scales if s != -1)
+        # scale differences
+        self.scale_diffs = [(self.N_fr_scales_max - N_fr_scale
+                             if N_fr_scale != -1 else -1)
+                            for N_fr_scale in self.N_fr_scales]
+        # make unique variants
+        self.N_fr_scales_unique = np.unique([N_fr_scale
+                                             for N_fr_scale in self.N_fr_scales
+                                             if N_fr_scale != -1])
+        self.scale_diffs_unique = np.unique([scale_diff
+                                             for scale_diff in self.scale_diffs
+                                             if scale_diff != -1])
         # store number of unique scales
-        self.n_scales_fr = len(np.unique([s for s in self.N_fr_scales
-                                          if s != -1]))
+        self.n_scales_fr = len(self.scale_diffs_unique)
 
         # ensure 2**J_fr <= nextpow2(N_frs_max)
         if self.J_fr is None:
@@ -1642,26 +1697,34 @@ class _FrequencyScatteringBase(ScatteringBase):
         err = ValueError("`max_pad_factor_fr` must be int>0, non-increasing "
                          "list/tuple[int>0], or None " +
                          "(got %s)" % str(self.max_pad_factor_fr))
+        # TODO "non-increasing" isn't necessary (rather, resulting J_pad_frs
+        # must be non-increasing)
+
         if isinstance(self.max_pad_factor_fr, int):
-            self.max_pad_factor_fr = [self.max_pad_factor_fr
-                                      ] * self.n_scales_fr
+            self.max_pad_factor_fr = {scale_diff: self.max_pad_factor_fr
+                                      for scale_diff in self.scale_diffs_unique}
 
         elif isinstance(self.max_pad_factor_fr, (list, tuple)):
-            if any(np.diff(self.max_pad_factor_fr) > 0):
-                raise err
-            while len(self.max_pad_factor_fr) < self.n_scales_fr:
-                # repeat last value
-                self.max_pad_factor_fr.append(self.max_pad_factor_fr[-1])
-            # must guarantee that `J_pad_fr > J_pad_frs_max_init` cannot occur
-            if max(self.max_pad_factor_fr) > self.max_pad_factor_fr[0]:
+            _max_pad_factor_fr = {}
+            for i, scale_diff in enumerate(self.scale_diffs_unique):
+                if i > len(self.max_pad_factor_fr) - 1:
+                    _max_pad_factor_fr[scale_diff] = self.max_pad_factor_fr[-1]
+                else:
+                    _max_pad_factor_fr[scale_diff] = self.max_pad_factor_fr[i]
+            self.max_pad_factor_fr = _max_pad_factor_fr
+
+            # guarantee that `J_pad_fr > J_pad_frs_max_init` cannot occur
+            if max(self.max_pad_factor_fr.values()) > self.max_pad_factor_fr[0]:
                 J_pad_frs_max = max(s + p for s, p in
-                                   zip(self.N_fr_scales[::-1],
-                                       self.max_pad_factor_fr))
+                                    zip(self.N_fr_scales_unique[::-1],
+                                        self.max_pad_factor_fr.values()))
                 first_max_pf_min = J_pad_frs_max - self.N_fr_scales_max
+                # ensures `J_pad_frs[0] >= J_pad_frs[1:]`
                 self.max_pad_factor_fr[0] = first_max_pf_min
 
         elif self.max_pad_factor_fr is None:
-            self.J_pad_frs_max_user = None
+            pass
+
         else:
             raise err
         self.unrestricted_pad_fr = bool(self.max_pad_factor_fr is None)
@@ -1706,6 +1769,12 @@ class _FrequencyScatteringBase(ScatteringBase):
             raise ValueError(("unsupported `sampling_phi_fr` ({}), must be one "
                               "of: {}").format(self.sampling_phi_fr,
                                                ', '.join(phi_supported)))
+        elif self.sampling_phi_fr == 'recalibrate' and self.average_fr_global_phi:
+            raise ValueError("`F='global'` && `sampling_phi_fr='recalibrate'` "
+                             "is unsupported.")
+        elif self.sampling_phi_fr == 'recalibrate' and self.aligned:
+            raise ValueError("`aligned=True` && `sampling_phi_fr='recalibrate'` "
+                             "is unsupported.")
 
         # compute maximum amount of padding
         # we do this at max possible `N_fr` per each dyadic scale
@@ -1717,35 +1786,26 @@ class _FrequencyScatteringBase(ScatteringBase):
     def create_phi_filters(self):
         """See `filter_bank.phi_fr_factory`."""
         self.phi_f_fr = phi_fr_factory(
-            self.J_pad_frs_max_init, self.F, self.log2_F,
+            self.J_pad_frs_max_init, self.J_pad_frs, self.F, self.log2_F,
             **self.get_params('N_fr_scales_min', 'unrestricted_pad_fr',
-                              'sampling_phi_fr', 'criterion_amplitude',
-                              'sigma0', 'P_max', 'eps'))
-
-        # if we pad less, `phi_f_fr[subsample_equiv_due_to_pad]` fails
-        # Overrides `max_pad_factor_fr`.
-        self._n_phi_f_fr = len([k for k in self.phi_f_fr if isinstance(k, int)])
-        self.max_subsample_equiv_before_phi_fr = (
-            self._n_phi_f_fr - 1 if not self.average_fr_global else
-            self.J_pad_frs_max_init)
+                              'pad_mode_fr', 'sampling_phi_fr',
+                              'average_fr_global_phi',
+                              'criterion_amplitude', 'sigma0', 'P_max', 'eps'))
 
     def create_psi_filters(self):
         """See `filter_bank.psi_fr_factory`."""
-        (self.psi1_f_fr_up, self.psi1_f_fr_down,
-         self.max_subsample_equiv_before_psi_fr) = psi_fr_factory(
-            self.J_pad_frs_max_init, self.J_fr, self.Q_fr, self.N_frs,
-            **self.get_params(
-                'N_fr_scales_max', 'N_fr_scales_min', 'pad_mode_fr',
-                'max_pad_factor_fr', 'unrestricted_pad_fr',
-                'max_subsample_equiv_before_phi_fr',
-                'subsample_equiv_relative_to_max_pad_init',
-                'average_fr_global_phi', 'sampling_psi_fr', 'sampling_phi_fr',
-                'sigma_max_to_min_max_ratio',
-                'r_psi_fr', 'normalize_fr', 'sigma0', 'alpha', 'P_max', 'eps'))
+        (self.psi1_f_fr_up, self.psi1_f_fr_down, self.psi_ids
+         ) = psi_fr_factory(
+            self.psi_fr_params, self.N_fr_scales_unique, self.N_fr_scales_max,
+            self.N_fr_scales_min, self.J_pad_frs, **self.get_params(
+                'unrestricted_pad_fr', 'sampling_psi_fr', 'pad_mode_fr',
+                'scale_diff_max_to_set_pad_min_due_to_psi',  # TODO rename
+                'r_psi_fr', 'normalize_fr',
+                'criterion_amplitude', 'sigma0', 'alpha', 'P_max', 'eps'))
 
         # cannot do energy norm with 3 filters, and generally filterbank
         # isn't well-behaved
-        n_psi_frs = len(self.psi1_f_fr_up)
+        n_psi_frs = len(self.psi1_f_fr_up[0])
         if n_psi_frs <= 3:
             raise Exception(("configuration yielded %s wavelets for frequential "
                              "scattering, need a minimum of 4; try increasing "
@@ -1755,193 +1815,613 @@ class _FrequencyScatteringBase(ScatteringBase):
         if self.analytic_fr:
             psi_fs_all = (self.psi1_f_fr_up, self.psi1_f_fr_down)
             for s1_fr, psi_fs in enumerate(psi_fs_all):
-              for n1_fr in range(len(psi_fs)):
-                for j0 in psi_fs[n1_fr]:
-                  if isinstance(j0, int):
-                      pf = psi_fs[n1_fr][j0]
-                      M = len(pf)
-                      if s1_fr == 0:
-                          pf[:M//2] = 0      # anti-analytic, zero positives
-                      else:
-                          pf[M//2 + 1:] = 0  # analytic, zero negatives
-                      pf[M//2] /= 2          # halve Nyquist
+              for psi_id in psi_fs:
+                if not isinstance(psi_id, int):
+                    continue
+                for n1_fr in range(len(psi_fs[psi_id])):
+                    pf = psi_fs[psi_id][n1_fr]
+                    M = len(pf)
+                    if s1_fr == 0:
+                        pf[:M//2] = 0      # anti-analytic, zero positives
+                    else:
+                        pf[M//2 + 1:] = 0  # analytic, zero negatives
+                    pf[M//2] /= 2          # halve Nyquist
 
     def adjust_padding_and_filters(self):
-        # adjust padding
-        if self.max_subsample_equiv_before_psi_fr is not None:
-            self.J_pad_frs_min_limit_due_to_psi = (
-                self.J_pad_frs_max_init - self.max_subsample_equiv_before_psi_fr)
-            self.J_pad_frs_min_limit = max(self.J_pad_frs_min_limit_due_to_phi,
-                                           self.J_pad_frs_min_limit_due_to_psi)
-            # adjust existing J_pad_fr per (potentially) new J_pad_frs_min_limit;
-            # overrides `max_pad_factor_fr`.
-            for n2, (J_pad_fr, N_fr
-                     ) in enumerate(zip(self.J_pad_frs, self.N_frs)):
-                if J_pad_fr != -1:
-                    if self.unrestricted_pad_fr:
-                        J_pad_fr = max(J_pad_fr, self.J_pad_frs_min_limit)
-                    else:
-                        # `min` not needed in current implem as it's already
-                        # realized in `compute_J_pad_fr()` but keep to be sure
-                        N_fr_scales = math.ceil(math.log2(N_fr))
-                        scale_diff = self.N_fr_scales_max - N_fr_scales
-                        J_pad_fr = max(min(J_pad_fr,
-                                           N_fr_scales +
-                                           self.max_pad_factor_fr[scale_diff]),
-                                       self.J_pad_frs_min_limit)
-
-                    self.J_pad_frs[n2] = J_pad_fr
-                    j0, pad_left, pad_right, ind_start, ind_end = (
-                        self._compute_padding_params(J_pad_fr, N_fr))
-                    self.subsample_equiv_relative_to_max_pad_init[n2] = j0
-                    self.pad_left_fr[n2] = pad_left
-                    self.pad_right_fr[n2] = pad_right
-                    self.ind_start_fr[n2] = ind_start
-                    self.ind_end_fr[n2] = ind_end
-        else:
-            self.J_pad_frs_min_limit_due_to_psi = None
-            self.J_pad_frs_min_limit = self.J_pad_frs_min_limit_due_to_phi
-        # validate resulting J_pad_fr
-        prev_pad = -2
-        for pad in self.J_pad_frs:
-            if pad < prev_pad:
-                raise Exception("`max_pad_factor_fr` yielded padding that's "
-                                "greater for lesser `N_fr_scales`; this is "
-                                "likely to yield incorrect or undefined behavior."
-                                "\nJ_pad_frs=%s" % self.J_pad_frs)
-            prev_pad = pad
-        # realized minimum
-        self.J_pad_frs_min = min(p for p in self.J_pad_frs if p != -1)
+        #             # TODO ind max? -> common?
+        # realized minimum & maximum
+        self.J_pad_frs_min = min(self.J_pad_frs.values())
+        self.J_pad_frs_max = max(self.J_pad_frs.values())
 
         if not self.unrestricted_pad_fr:
             # adjust phi_fr
-            j0_max_realized = self.J_pad_frs_max_init - self.J_pad_frs_min
-            j_frs = [k for k in self.phi_f_fr if isinstance(k, int)]
-            for j_fr in j_frs:
-                if j_fr > j0_max_realized:
-                    del self.phi_f_fr[j_fr]
+            pad_diff_max_realized = self.J_pad_frs_max_init - self.J_pad_frs_min
+            log2_F_phi_diffs = [k for k in self.phi_f_fr if isinstance(k, int)]
+            for log2_F_phi_diff in log2_F_phi_diffs:
+                for pad_diff in self.phi_f_fr[log2_F_phi_diff]:
+                    if pad_diff > pad_diff_max_realized:
+                        del self.phi_f_fr[log2_F_phi_diff][pad_diff]
+                # shouldn't completely empty a scale
+                assert len(self.phi_f_fr[log2_F_phi_diff]) != 0
 
         # energy norm
         if 'energy' in self.normalize_fr:
             energy_norm_filterbank_fr(self.psi1_f_fr_up, self.psi1_f_fr_down,
                                       self.phi_f_fr, self.J_fr, self.log2_F)
 
-    def compute_padding_fr(self):
-        """Docs in `TimeFrequencyScatteringBase1D`."""
-        # tentative limit
-        self.J_pad_frs_min_limit_due_to_phi = (
-            self.J_pad_frs_max_init - self.max_subsample_equiv_before_phi_fr)
+    def create_init_psi_filters(self):
+        # TODO dislike indirect design, reuse these filters in filter_bank
+        # instead of hoping they're created the same
 
-        attrs = ('J_pad_frs', 'pad_left_fr', 'pad_right_fr',
-                 'ind_start_fr', 'ind_end_fr',
-                 'ind_start_fr_max', 'ind_end_fr_max',
-                 'subsample_equiv_relative_to_max_pad_init')
-        for attr in attrs:
-            setattr(self, attr, [])
+        # params #############################################################
+        J_fr, Q_fr, r_psi_fr = self.J_fr, self.Q_fr, self.r_psi_fr
+        criterion_amplitude = self.criterion_amplitude
+        sigma0 = self.sigma0
+        alpha = self.alpha
+        normalize_fr = self.normalize_fr
+        P_max, eps = self.P_max, self.eps
 
-        # J_pad is ordered lower to greater, so iterate backward then reverse
-        # (since we don't yet know max `j0`)
-        for n2_reverse, N_fr in enumerate(self.N_frs[::-1]):
-            if N_fr != 0:
-                J_pad = self.compute_J_pad_fr(N_fr)
+        N_fr_scales_max = self.N_fr_scales_max
+        J_pad_frs_max_init = self.J_pad_frs_max_init
 
-                # compute the padding quantities
-                j0, pad_left, pad_right, ind_start, ind_end = (
-                    self._compute_padding_params(J_pad, N_fr))
+        ######################################################################
+
+        xi_min_fr = 2 / 2**J_pad_frs_max_init  # leftmost peak at bin 2
+        T = 1  # for computing `sigma_low`, unused
+        (_, xi1_frs, sigma1_frs, j1_frs, is_cqt1_frs, *_
+         ) = calibrate_scattering_filters(J_fr, Q_fr, T=T, r_psi=r_psi_fr,
+                                          sigma0=sigma0, alpha=alpha,
+                                          xi_min=xi_min_fr)
+
+        # instantiate filter
+        psi1_f_fr_down = {}
+        scale_diff = -1  # since this filterbank's removed later
+        psi1_f_fr_down[scale_diff] = []
+        # initialize meta
+        for field in ('width', 'xi', 'sigma', 'j', 'is_cqt'):
+            psi1_f_fr_down[field] = {scale_diff: []}
+
+        for n1_fr in range(len(j1_frs)):
+            N_fr_scale = N_fr_scales_max
+
+            #### Compute wavelet #############################################
+            # fetch wavelet params, sample wavelet
+            xi, sigma = xi1_frs[n1_fr], sigma1_frs[n1_fr]
+            padded_len = 2**J_pad_frs_max_init
+
+            # expand dim to multiply along freq like (2, 32, 4) * (32, 1)
+            psi = morlet_1d(padded_len, xi, sigma, normalize=normalize_fr,
+                            P_max=P_max, eps=eps)[:, None]
+
+            psi1_f_fr_down[scale_diff].append(psi)
+            # embed meta
+            width = 2*compute_temporal_width(
+                psi, N=2**N_fr_scale, sigma0=sigma0,
+                criterion_amplitude=criterion_amplitude)
+            psi1_f_fr_down['width'][scale_diff].append(width)
+            psi1_f_fr_down['xi'    ][scale_diff].append(xi)
+            psi1_f_fr_down['sigma' ][scale_diff].append(sigma)
+            psi1_f_fr_down['j'     ][scale_diff].append(j1_frs[n1_fr])
+            psi1_f_fr_down['is_cqt'][scale_diff].append(is_cqt1_frs[n1_fr])
+
+        self.psi1_f_fr_down_init = psi1_f_fr_down
+
+    def _compute_psi_fr_params(self):
+        psis = self.psi1_f_fr_down_init
+
+        params_init = {field: [p for n1_fr, p in enumerate(psis[field][-1])]
+                       for field in ('xi', 'sigma', 'j', 'is_cqt')}
+
+        if self.sampling_psi_fr in ('resample', 'exclude'):
+            params = {}
+            for N_fr_scale in self.N_fr_scales[::-1]:
+                if N_fr_scale == -1:
+                    continue
+                scale_diff = self.N_fr_scales_max - N_fr_scale
+
+                if self.sampling_psi_fr == 'resample' or scale_diff == 0:
+                    # all `sampling_psi_fr` should agree on `N_fr_scales_max`;
+                    # 'exclude' may omit some filters if `not unrestricted_pad_fr`
+                    # per insufficient padding amplifying 'width'
+                    params[scale_diff] = deepcopy(params_init)
+
+                elif self.sampling_psi_fr == 'exclude':
+                    params[scale_diff] = {field: [] for field in params_init}
+
+                    for n1_fr in range(len(params_init['j'])):
+                        width = psis['width'][-1][n1_fr]
+                        if width > 2**N_fr_scale:
+                            # subsequent `width` are only greater
+                            break
+
+                        for field in params_init:
+                            params[scale_diff][field].append(
+                                params_init[field][n1_fr])
+
+        elif self.sampling_psi_fr == 'recalibrate':
+            N = 2**self.J_pad_frs_max_init
+            (xi1_frs_new, sigma1_frs_new, j1_frs_new, is_cqt1_frs_new,
+             self.scale_diff_max_recalibrate) = _recalibrate_psi_fr(
+                 *[params_init[field] for field in params_init],
+                 N, self.alpha, self.N_fr_scales_min, self.N_fr_scales_max,
+                 self.sigma_max_to_min_max_ratio)
+
+            # pack as `params[scale_diff][field][n1_fr]`
+            params = {}
+            for scale_diff in j1_frs_new:
+                params[scale_diff] = {field: [] for field in params_init}
+                for field, p in zip(params_init, (xi1_frs_new, sigma1_frs_new,
+                                                  j1_frs_new, is_cqt1_frs_new)):
+                    params[scale_diff][field] = p[scale_diff]
+
+        # set `scale_diff_max_psi`
+        # scale_diff_prev = 0
+        # for N_fr_scale in self.N_fr_scales[::-1]:
+        #     scale_diff = self.N_fr_scales_max - N_fr_scale
+        #     if len(params[scale_diff]['j']) == 0:
+        #         scale_diff_max_psi = scale_diff_prev
+        #         break
+        #     scale_diff_prev = scale_diff
+        # else:
+        #     scale_diff_max_psi = 999
+        # self._scale_diff_max_psi_tentative = scale_diff_max_psi
+
+        self.psi_fr_params = params
+
+        if self.sampling_psi_fr != 'recalibrate':
+            self.scale_diff_max_recalibrate = None  # TODO private, and in args?
+
+        # remove unused
+        self.psi1_f_fr_down_init = {}
+        del self.psi1_f_fr_down_init
+
+        # compute needed quantity
+        self._compute_J_pad_frs_min_limit_due_to_psi()
+
+    def _compute_J_pad_frs_min_limit_due_to_psi(self):
+        """
+        `J_pad_frs_min_limit_due_to_psi` determined by:
+
+          [1] 'resample' and unrestricted_pad_fr: smallest padding such that
+              all wavelets still fully decay (reach `criterion_amplitude`)
+
+          [2] 'exclude': smallest padding is padding that occurs at
+              smallest `N_fr_scale` (i.e. largest `scale_diff`) that computes a
+              filterbank (i.e. at least one wavelet with 'width' > 2**N_fr_scale);
+              i.e. we reuse that padding for lesser `N_fr_scale`
+
+          [3] 'recalibrate': we reuse same as 'exclude', except now determined
+              by `scale_diff_max_recalibrate` returned by
+              `filter_bank._recalibrate_psi_fr`
+
+          [4] all: smallest padding such that all wavelets are wavelets
+              (i.e. not a pure tone, one DFT bin, which throws ValueError)
+              however we only exit the program if this occurs for non-'resample',
+              as 'exclude' & 'recalibrate' must automatically satisfy this
+              per shrinking support with smaller `N_fr_scale`
+
+          not [5] phi: phi computes such that it's available at all given
+              paddings, even if it distorts severely. However, worst case
+              distortion is `scale == pad`, i.e. `log2_F_phi == J_pad_fr`,
+              guaranteed by `J_pad_fr = max(, total_conv_stride_over_U1)`.
+
+              Note phi construction can never fail via ValueError in [4],
+              but it can become a plain global average against intent. We agree
+              to potential distortions with `max_pad_factor_fr != None`,
+              while still promising "no extreme distortions" (i.e. ValueError);
+              here it's uncertain what's "extreme", as even a fully decayed phi
+              with `log2_F_phi == N_fr_scale` will approximate a direct
+              global averaging.
+
+        [1] and [4] directly set `J_pad_frs_min_limit_due_to_psi`.
+        [2] and [3] set `scale_diff_max_to_set_pad_min_due_to_psi`, which in turn
+        sets `J_pad_frs_min_limit_due_to_psi` in `compute_padding_fr()`.
+        """
+        params = self.psi_fr_params
+        scale_diff_max_to_set_pad_min = None
+        pad_diff_max = None
+
+        if self.sampling_psi_fr in ('exclude', 'recalibrate'):
+            scale_diff_prev = 0
+            for N_fr_scale in self.N_fr_scales_unique[::-1]:
+                scale_diff = self.N_fr_scales_max - N_fr_scale
+                if len(params[scale_diff]['j']) == 0:
+                    scale_diff_max_to_set_pad_min = scale_diff_prev
+                    break
+                scale_diff_prev = scale_diff
+
+            if self.sampling_psi_fr == 'recalibrate':
+                assert scale_diff_max_to_set_pad_min == (
+                    self.scale_diff_max_recalibrate)
+
+        elif self.sampling_psi_fr == 'resample':
+            # 'resample''s `else` is also applicable to 'exclude' & 'recalibrate',
+            # but it's expected to hold automatically - and if doesn't, will
+            # raise Exception in `filter_bank.psi_fr_factory`
+
+            # unpack params
+            xi1_frs, sigma1_frs, j1_frs, is_cqt1_frs = [
+                params[0][field] for field in ('xi', 'sigma', 'j', 'is_cqt')]
+
+            if self.unrestricted_pad_fr:
+                # in this case filter temporal behavior is preserved across all
+                # lengths, so we must restrict lowest length such that widest
+                # filter still decays
+                pad_diff = 0
+                while True:
+                    # `scale_diff = 0` <=> `J_pad_fr = J_pad_frs_max_init` here
+                    J_pad_fr = self.J_pad_frs_max_init - pad_diff
+
+                    psi_widest = morlet_1d(2**J_pad_fr, xi1_frs[-1],
+                                           sigma1_frs[-1], P_max=self.P_max,
+                                           normalize=self.normalize_fr,
+                                           eps=self.eps)[:, None]
+                    # TODO longest*
+                    psi_widest_support = 2*compute_temporal_support(
+                        psi_widest.T,
+                        criterion_amplitude=self.criterion_amplitude)
+                    if psi_widest_support == len(psi_widest):
+                        # in zero padding we cut padding in half, which distorts
+                        # the wavelet but negligibly relative to the
+                        # scattering scale
+                        if pad_diff == 0:
+                            if self.pad_mode_fr != 'zero':
+                                raise Exception(
+                                    "got `pad_diff_max == 0` with"
+                                    "`pad_mode_fr != 'zero'`, meaning "
+                                    "`J_pad_frs_max_init` computed incorrectly.")
+                            pad_diff_max = 0
+                        else:
+                            pad_diff_max = pad_diff - 1
+                        break
+                    elif len(psi_widest) == 2**self.N_fr_scales_min:
+                        # smaller pad length is impossible
+                        break
+                    pad_diff += 1
             else:
-                J_pad, pad_left, pad_right, j0 = -1, -1, -1, -1
-                ind_start, ind_end = [], []
+                # this `else` isn't exclusive with the `if`
+                # (i.e. in case `unrestricted_pad_fr==True`), but if `if` holds,
+                # so will `else` (former's more restrictive)
+                pad_diff = 0
+                while True:
+                    # in submaximal padding, a non-last wavelet may have wider
+                    # support, so check all wavelets (still won't be near Nyquist
+                    # but simplify logic)
+                    for n1_fr in range(len(xi1_frs)):
+                        #### Compute wavelet #################################
+                        # fetch wavelet params, sample wavelet
+                        xi, sigma = xi1_frs[n1_fr], sigma1_frs[n1_fr]
+                        J_pad_fr = self.J_pad_frs_max_init - pad_diff
 
-            self.J_pad_frs.append(J_pad)
-            self.pad_left_fr.append(pad_left)
-            self.pad_right_fr.append(pad_right)
-            self.ind_start_fr.append(ind_start)
-            self.ind_end_fr.append(ind_end)
-            self.subsample_equiv_relative_to_max_pad_init.append(j0)
+                        try:
+                            _ = morlet_1d(2**J_pad_fr, xi, sigma,
+                                          normalize=self.normalize_fr,
+                                          P_max=self.P_max, eps=self.eps)
+                        except ValueError as e:
+                            if "division" not in str(e):
+                                raise e
+                            pad_diff_max = max(pad_diff - 1, 0)
+                            break
+                    if pad_diff_max is not None:
+                        break
+                    pad_diff += 1
 
-        for attr in attrs:
-            getattr(self, attr).reverse()
-        self.J_pad_frs_max = max(self.J_pad_frs)
+        # only one must be set
+        assert not (pad_diff_max is not None and
+                    scale_diff_max_to_set_pad_min is not None)
 
-        # compute maximum ind_start and ind_end across all subsampling factors
-        # to use as common for out_type='array'
-        def get_idxs(attr):
-            return getattr(self, attr.strip('_max'))
+        if pad_diff_max is not None:
+            self.J_pad_frs_min_limit_due_to_psi = (self.J_pad_frs_max_init -
+                                                   pad_diff_max)
+            self.scale_diff_max_to_set_pad_min_due_to_psi = None  # TODO rename
+        elif scale_diff_max_to_set_pad_min is not None:
+            self.J_pad_frs_min_limit_due_to_psi = None  # None for now
+            self.scale_diff_max_to_set_pad_min_due_to_psi = (
+                scale_diff_max_to_set_pad_min)
+        else:
+            # no limits (i.e. naturally computed J_pad_frs_min is correct)
+            self.J_pad_frs_min_limit_due_to_psi = None
+            self.scale_diff_max_to_set_pad_min_due_to_psi = None
 
-        for attr in ('ind_start_fr_max', 'ind_end_fr_max'):
-            for j in range(self.log2_F + 1):
-                idxs_max = max(get_idxs(attr)[n2][j]
-                               for n2 in range(len(self.N_frs))
-                               if len(get_idxs(attr)[n2]) != 0)
-                getattr(self, attr).append(idxs_max)
+    def compute_stride_fr(self):
+        self._compute_psi_fr_params()
 
-        # max `n1_fr_subsample`; this may vary with `subsample_equiv_due_to_pad`
-        self.max_subsample_before_phi_fr = []
+        if self.out_3D:
+            stride_at_max_fr = self._get_stride(
+                scale_diff=0, N_fr_scale=self.N_fr_scales_max)[0]
+            self.unpad_len_common_at_max_fr_stride = (
+                self.ind_end_fr_max[stride_at_max_fr] -
+                self.ind_start_fr_max[stride_at_max_fr])
+        else:
+            self.unpad_len_common_at_max_fr_stride = None
+
+        # spinned stride -- main stride ######################################
+        self.total_conv_stride_over_U1s = {}
+        for N_fr_scale in self.N_fr_scales_unique[::-1]:
+            scale_diff = self.N_fr_scales_max - N_fr_scale
+
+            s = self._get_stride(scale_diff, N_fr_scale,
+                                 self.unpad_len_common_at_max_fr_stride)
+            self.total_conv_stride_over_U1s[scale_diff] = s
+
+        # now for phi_f pairs ################################################
+        self.total_conv_stride_over_U1s_phi = {}
+        for scale_diff in self.total_conv_stride_over_U1s:
+            if self.average_fr or not self.aligned:
+                if self.aligned or self.sampling_phi_fr == 'resample':
+                    s = self.log2_F
+                else:
+                    s = min(self.log2_F,
+                            max(self.total_conv_stride_over_U1s[scale_diff]))
+            else:
+                s = 0
+            self.total_conv_stride_over_U1s_phi[scale_diff] = s
+
+        # clarity assertions #################################################
+        # phi stride <= spinned stride
+        for scale_diff in self.total_conv_stride_over_U1s:
+            s_spinned = max(self.total_conv_stride_over_U1s[scale_diff])
+            s_phi     = self.total_conv_stride_over_U1s_phi[scale_diff]
+            # must hold to not potentially require padding phi pairs separately
+            # per J_pad_fr >= total_conv_stride_over_U1
+            assert s_phi <= s_spinned, (s_phi, s_spinned)
+
+        # for out_3D, stride is same on per-`scale_diff` basis, and spinned and
+        # phi strides must match for scale_diff==0 (for `stride_ref` in unpadding)
+        if self.out_3D:
+            for scale_diff in self.total_conv_stride_over_U1s:
+                assert len(set(self.total_conv_stride_over_U1s[scale_diff])
+                           ) == 1, self.total_conv_stride_over_U1s
+            s0 = self.total_conv_stride_over_U1s[0][0]
+            s1 = self.total_conv_stride_over_U1s_phi[0]
+            assert s0 == s1, (self.total_conv_stride_over_U1s,
+                              self.total_conv_stride_over_U1s_phi)
+            assert s0 <= self.log2_F
+
+    def _get_stride(self, scale_diff, N_fr_scale,
+                    unpad_len_common_at_max_fr_stride=None):
+        assert N_fr_scale != -1
+
+        # prefetch params ################################################
+        if scale_diff not in self.psi_fr_params:
+            # shouldn't occur otherwise
+            assert self.sampling_psi_fr in ('exclude', 'recalibrate'), (
+                scale_diff, self.psi_fr_params)
+            # don't need to adjust `N_fr_scale`, since in the one place it's
+            # used, it must refer to the actual scale, while the point of
+            # `scale_diff` is to refer to the actual filterbank, which
+            # this `scale_diff_ref` will do
+            scale_diff_ref = max(self.psi_fr_params)
+            # clarity assertion
+            assert scale_diff_ref == self.scale_diff_max_to_set_pad_min_due_to_psi
+        else:
+            scale_diff_ref = scale_diff
+        j1_frs_scale = self.psi_fr_params[scale_diff_ref]['j']
+        n_n1_frs = len(j1_frs_scale)
+
+        # handle edge cases (cont'd) #####################################
+        # resample_psi = bool(sampling_psi_fr in ('resample', 'exclude'))
+        resample_phi = bool(self.sampling_phi_fr == 'resample')
+
+        if (unpad_len_common_at_max_fr_stride is None and
+                (self.out_3D and not self.aligned and not resample_phi)):
+            return [self.log2_F] * n_n1_frs
+
+        # get stride #####################################################
+        if self.average_fr:
+            if self.aligned:
+                s = self.log2_F
+                assert resample_phi
+            else:
+                if resample_phi:
+                    if self.out_3D:
+                        s = self.log2_F
+                    else:
+                        s = []
+                        for n1_fr in range(n_n1_frs):
+                            max_filter_stride = max(self.log2_F,
+                                                    j1_frs_scale[n1_fr])
+                            _s = max_filter_stride
+                            s.append(_s)
+                else:
+                    if self.out_3D:
+                        # avoid N_fr dependence
+                        N_fr_max_at_scale = 2**N_fr_scale
+                        # except at max scale case
+                        N_fr = min(N_fr_max_at_scale, self.N_frs_max)
+                        min_stride_to_unpad_like_max = math.ceil(math.log2(
+                            N_fr / unpad_len_common_at_max_fr_stride))
+                        s = min_stride_to_unpad_like_max
+                    else:
+                        s = []
+                        for n1_fr in range(n_n1_frs):
+                            # min: nonzero unpad
+                            # max: not oversampled
+                            _s = max(min(self.log2_F, N_fr_scale),
+                                     j1_frs_scale[n1_fr])
+                            nonzero_unpad_but_not_oversampled = _s
+                            s.append(nonzero_unpad_but_not_oversampled)
+        else:
+            if self.aligned:
+                s = 0
+            else:
+                s = j1_frs_scale
+            assert not self.out_3D
+
+        if not isinstance(s, list):
+            s = [s] * n_n1_frs
+        assert len(s) == n_n1_frs, (len(s), n_n1_frs)
+        return s
+
+    def compute_unpadding_fr(self):
+        self.ind_start_fr, self.ind_end_fr = [], []
         for n2, N_fr in enumerate(self.N_frs):
-            j0 = self.subsample_equiv_relative_to_max_pad_init[n2]
-            if j0 == -1:
-                sub = -1
-            elif self.average_fr_global_phi:
-                # "lowpass shape" always same, can't distort
-                sub = 999
+            if N_fr != 0:
+                _ind_start, _ind_end = self._compute_unpadding_params(N_fr)
             else:
-                sub = len(self.phi_f_fr[j0]) - 1
-            self.max_subsample_before_phi_fr.append(sub)
+                _ind_start, _ind_end = [], []
 
-        # unused quantity; if this exceeds `J_pad_frs_max_init`, then
-        # `phi_t * psi_f` and `phi_t * phi_f` pairs will incur boundary effects.
-        # Implem doesn't account for this as the effect is rare and most often
-        # not great, while greatly complicating implem logic
-        self._J_pad_frs_fo = self.compute_J_pad_fr(self.N_frs_max_all,
-                                                   recompute=True, Q=(0, 0))
+            self.ind_start_fr.append(_ind_start)
+            self.ind_end_fr.append(_ind_end)
 
-    def _compute_padding_params(self, J_pad, N_fr):
-        pad_left = 0
-        pad_right = 2**J_pad - pad_left - N_fr
-        j0 = self.J_pad_frs_max_init - J_pad
-        assert j0 >= 0, "%s > %s | %s" % (J_pad, self.J_pad_frs_max_init, N_fr)
+        # compute out_3D params
+        self.ind_start_fr_max, self.ind_end_fr_max = [], []
+        for sub in range(self.log2_F + 1):
+            start_max, end_max = [max(idxs[n2][sub]
+                                      for n2 in range(len(self.N_frs))
+                                      if len(idxs[n2]) != 0)
+                                  for idxs in
+                                  (self.ind_start_fr, self.ind_end_fr)]
+            self.ind_start_fr_max.append(start_max)
+            self.ind_end_fr_max.append(end_max)
 
+    def _get_min_to_pad_bound_effs(self, N_fr_scale, scale_diff):
+        # note, for `average_fr=False`, `min_to_pad_phi` can be `0` for
+        # spinned pairs, but this may necessiate two FFTs on |U1 * psi2|,
+        # one on larger padded (for the phi_f pairs) and other on its trimming.
+        # Not a concern for `J_fr >= log2_F and sampling_psi_fr == 'resample'`
+
+        factor = 2**scale_diff
+
+        # 'resample' preserves supports, while 'exclude' & 'recalibrate'
+        # build precisely to `// factor` logic
+        min_to_pad_phi = (self._pad_fr_phi if self.sampling_phi_fr == 'resample'
+                          else self._pad_fr_phi // factor)
+        min_to_pad_psi = (self._pad_fr_psi if self.sampling_psi_fr == 'resample'
+                          else self._pad_fr_psi // factor)
+
+        min_to_pad = max(min_to_pad_phi, min_to_pad_psi)
+        min_to_pad_bound_effs = math.ceil(math.log2(2**N_fr_scale + 2*min_to_pad))
+        return min_to_pad_bound_effs
+
+    def compute_padding_fr(self):
+        self.J_pad_frs = {}
+        for N_fr_scale in self.N_fr_scales_unique[::-1]:
+            # check for reuse
+            scale_diff = self.N_fr_scales_max - N_fr_scale
+            if (self.scale_diff_max_to_set_pad_min_due_to_psi is not None and
+                      scale_diff >
+                      self.scale_diff_max_to_set_pad_min_due_to_psi):
+                # account for `scale_diff_max_to_set_pad_min_due_to_psi`
+                # reuse max `scale_diff`'s
+                self.J_pad_frs[scale_diff] = self.J_pad_frs[
+                    self.scale_diff_max_to_set_pad_min_due_to_psi]
+                if self.J_pad_frs_min_limit_due_to_psi is None:
+                    self.J_pad_frs_min_limit_due_to_psi = self.J_pad_frs[
+                        scale_diff]
+                continue
+
+            # compute padding ################################################
+            # compute pad for bound effs
+            min_to_pad_bound_effs = self._get_min_to_pad_bound_effs(
+                N_fr_scale, scale_diff)
+            if self.unrestricted_pad_fr:
+                pad_boundeffs = min_to_pad_bound_effs
+            else:
+                pad_boundeffs = min(min_to_pad_bound_effs,
+                                    N_fr_scale +
+                                    self.max_pad_factor_fr[scale_diff])
+
+            # account for out_3D
+            if not self.out_3D:
+                _J_pad_fr = pad_boundeffs
+            else:
+                # smallest `J_pad_fr` such that
+                #   J_pad_fr / s >= unpad_len_common_at_max_fr_stride;
+                #   s = 2**total_conv_stride_over_U1s[n2][0]
+                # i.e.
+                #   J_pad_fr >= unpad_len_common_at_max_fr_stride * 2**s [*1]
+                #
+                # for `aligned and out_3D`, this will always end up being
+                # `J_pad_frs_max`, since `s = log2_F` always, and `J_pad_fr`
+                # in [*1] is forced to the max.
+                #
+                # the `[0]` isn't special, all indices are same for a given `n2`,
+                # due to `out_3D`
+                pad_3D = math.ceil(math.log2(
+                    self.unpad_len_common_at_max_fr_stride *
+                    2**self.total_conv_stride_over_U1s[scale_diff][0]))
+                # `pad_3D` overrides `max_pad_factor_fr`
+                _J_pad_fr = max(pad_boundeffs, pad_3D)  # TODO
+                # but not `min_to_pad_bound_effs`
+                _J_pad_fr = min(min_to_pad_bound_effs, _J_pad_fr)
+
+            # account for stride
+            min_to_pad_stride = max(self.total_conv_stride_over_U1s[scale_diff])
+            J_pad_fr = max(_J_pad_fr, min_to_pad_stride)
+
+            # account for `J_pad_frs_min_limit_due_to_psi`
+            if self.J_pad_frs_min_limit_due_to_psi is not None:
+                J_pad_fr = max(J_pad_fr, self.J_pad_frs_min_limit_due_to_psi)
+
+            # insert
+            self.J_pad_frs[scale_diff] = J_pad_fr
+
+        # validate padding computed so far, as `psi_fr_factory` relies on it
+        self._assert_descending_J_pad_frs()
+
+        # compute related params #############################################
+        self.pad_left_fr, self.pad_right_fr = [], []
+        for n2, N_fr in enumerate(self.N_frs):
+            if N_fr != 0:
+                scale_diff = self.N_fr_scales_max - math.ceil(math.log2(N_fr))
+                J_pad_fr = self.J_pad_frs[scale_diff]
+                (_pad_left, _pad_right
+                 ) = self._compute_padding_params(J_pad_fr, N_fr)
+            else:
+                _pad_left, _pad_right = -1, -1
+
+            self.pad_left_fr.append(_pad_left)  # TODO unused?
+            self.pad_right_fr.append(_pad_right)
+
+        # compute `scale_diff_max_to_set_pad_min_due_to_psi`  # TODO rename
+        if self.scale_diff_max_to_set_pad_min_due_to_psi is None:
+            # clarity assertion
+            assert (self.sampling_psi_fr == 'resample' or
+
+                    (self.sampling_psi_fr == 'exclude' and
+                     max(self.scale_diffs) in self.psi_fr_params) or
+
+                    (self.sampling_psi_fr == 'recalibrate' and
+                     self.scale_diff_max_recalibrate is None)
+
+                    ), (self.sampling_psi_fr, self.scale_diffs,
+                        list(self.psi_fr_params),
+                        self.scale_diff_max_recalibrate)
+
+            if self.sampling_psi_fr == 'resample':
+                # scale before the first scale to drop below minimum
+                # is the limiting scale
+                J_pad_frs_min = min(self.J_pad_frs.values())
+                for scale_diff, J_pad_fr in self.J_pad_frs.items():
+                    if J_pad_fr == J_pad_frs_min:
+                        self.scale_diff_max_to_set_pad_min_due_to_psi = scale_diff
+                        break
+
+                # clear `psi_fr_params` of scales we won't build
+                scale_diffs = list(self.psi_fr_params)
+                for scale_diff in scale_diffs:
+                    if scale_diff > self.scale_diff_max_to_set_pad_min_due_to_psi:
+                        del self.psi_fr_params[scale_diff]
+
+    def _compute_unpadding_params(self, N_fr):
         # compute unpad indices for all possible subsamplings
         ind_start, ind_end = [0], [N_fr]
         for j in range(1, max(self.J_fr, self.log2_F) + 1):
             ind_start.append(0)
             ind_end.append(math.ceil(ind_end[-1] / 2))
-        return j0, pad_left, pad_right, ind_start, ind_end
+        return ind_start, ind_end
 
-    def compute_J_pad_fr(self, N_fr, recompute=False, Q=(0, 0)):
-        """Docs in `TimeFrequencyScatteringBase1D`."""
-        # for later
-        N_fr_scale = int(np.ceil(np.log2(N_fr)))
-        scale_diff = self.N_fr_scales_max - N_fr_scale
-        factor = 2**scale_diff
-        N_fr_max_at_scale = 2**N_fr_scale
+    def _compute_padding_params(self, J_pad, N_fr):
+        pad_left = 0
+        pad_right = 2**J_pad - pad_left - N_fr
 
-        if recompute:
-            J_pad, *_ = self._compute_J_pad_fr(N_fr_max_at_scale, Q)
-        elif (self.sampling_phi_fr == 'resample' or
-              self.sampling_psi_fr == 'resample'):
-            if self.sampling_phi_fr == 'resample':
-                if self.sampling_psi_fr == 'resample':
-                    min_to_pad = self.min_to_pad_fr_max
-                else:
-                    # see `else` below
-                    min_to_pad = max(self._pad_fr_phi, self._pad_fr_psi // factor)
-            else:
-                # 'exclude' is equivalent to 'recalibrate' in terms of min sigma
-                min_to_pad = max(self._pad_fr_psi, self._pad_fr_phi // factor)
-            J_pad = math.ceil(np.log2(N_fr_max_at_scale + 2 * min_to_pad))
-        else:
-            # both 'recalibrate' and 'exclude' build precisely to this logic
-            min_to_pad = self.min_to_pad_fr_max // factor
-            J_pad = math.ceil(np.log2(N_fr_max_at_scale + 2 * min_to_pad))
-
-        # don't let J_pad exceed user-set max
-        if not self.unrestricted_pad_fr:
-            J_pad = min(J_pad,
-                        N_fr_scale + self.max_pad_factor_fr[scale_diff])
-        # don't let J_pad drop below minimum
-        J_pad = max(J_pad, self.J_pad_frs_min_limit_due_to_phi)
-        return J_pad
+        # sanity check
+        pad_diff = self.J_pad_frs_max_init - J_pad
+        assert pad_diff >= 0, "%s > %s | %s" % (
+            J_pad, self.J_pad_frs_max_init, N_fr)
+        # return
+        return pad_left, pad_right
 
     def _compute_J_pad_fr(self, N_fr, Q):
         min_to_pad, pad_phi, pad_psi1, _ = compute_minimum_support_to_pad(
@@ -1971,6 +2451,16 @@ class _FrequencyScatteringBase(ScatteringBase):
     def get_params(self, *args):
         return {k: getattr(self, k) for k in args}
 
+    def _assert_descending_J_pad_frs(self):
+        prev_pad = 999
+        for pad in self.J_pad_frs.values():
+            if pad > prev_pad:
+                raise Exception("`max_pad_factor_fr` yielded padding that's "
+                                "greater for lesser `N_fr_scale`; this is "
+                                "likely to yield incorrect or undefined behavior."
+                                "\nJ_pad_frs=%s" % self.J_pad_frs)
+            prev_pad = pad
+
 
 def _check_runtime_args_jtfs(average, average_fr, out_type, out_3D):
     if 'array' in out_type and not average:
@@ -1985,6 +2475,7 @@ def _check_runtime_args_jtfs(average, average_fr, out_type, out_3D):
     if out_type not in supported:
         raise RuntimeError("`out_type` must be one of: {} (got {})".format(
             ', '.join(supported), out_type))
+
 
 def _handle_args_jtfs(oversampling, oversampling_fr, normalize, r_psi, out_type):
     # handle defaults

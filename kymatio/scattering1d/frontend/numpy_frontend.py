@@ -77,11 +77,12 @@ class TimeFrequencyScatteringNumPy1D(TimeFrequencyScatteringBase1D,
     def __init__(self, J, shape, Q, J_fr=None, Q_fr=2, T=None, F=None,
                  implementation=None, average=True, average_fr=False,
                  oversampling=0, oversampling_fr=None, aligned=True,
-                 sampling_filters_fr=('exclude', 'resample'), out_type="array",
-                 out_3D=False, out_exclude=None, pad_mode='reflect',
-                 pad_mode_fr='conj-reflect-zero', max_pad_factor=2,
-                 max_pad_factor_fr=None, analytic=True, normalize='l1-energy',
-                 r_psi=math.sqrt(.5), backend="numpy"):
+                 F_kind='gauss', sampling_filters_fr=('exclude', 'resample'),
+                 out_type="array", out_3D=False, out_exclude=None,
+                 paths_exclude=None, pad_mode='reflect',
+                 pad_mode_fr='conj-reflect-zero',max_pad_factor=2,
+                 max_pad_factor_fr=None, analytic=True,
+                 normalize='l1-energy', r_psi=math.sqrt(.5), backend="numpy"):
         (oversampling_fr, normalize_tm, normalize_fr, r_psi_tm, r_psi_fr,
          max_order_tm, scattering_out_type) = (
             _handle_args_jtfs(oversampling, oversampling_fr, normalize, r_psi,
@@ -96,9 +97,10 @@ class TimeFrequencyScatteringNumPy1D(TimeFrequencyScatteringBase1D,
 
         # Frequential scattering object
         TimeFrequencyScatteringBase1D.__init__(
-            self, J_fr, Q_fr, F, implementation, average_fr, aligned,
+            self, J_fr, Q_fr, F, implementation, average_fr, aligned, F_kind,
             sampling_filters_fr, max_pad_factor_fr, pad_mode_fr, normalize_fr,
-            r_psi_fr, oversampling_fr, out_3D, out_type, out_exclude)
+            r_psi_fr, oversampling_fr, out_3D, out_type, out_exclude,
+            paths_exclude)
         TimeFrequencyScatteringBase1D.build(self)
 
     def scattering(self, x):
@@ -130,9 +132,11 @@ class TimeFrequencyScatteringNumPy1D(TimeFrequencyScatteringBase1D,
             oversampling=self.oversampling,
             oversampling_fr=self.oversampling_fr,
             aligned=self.aligned,
+            F_kind=self.F_kind,
             out_type=self.out_type,
             out_3D=self.out_3D,
             out_exclude=self.out_exclude,
+            paths_exclude=self.paths_exclude,
             pad_mode=self.pad_mode)
         if self.out_structure is not None:
             S = pack_coeffs_jtfs(S, self.meta(), self.out_structure,

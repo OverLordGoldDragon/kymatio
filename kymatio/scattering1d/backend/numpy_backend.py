@@ -119,11 +119,6 @@ class NumpyBackend1D(NumpyBackend):
         return ifft(x, axis=axis, workers=-1)
 
     @classmethod
-    def transpose(cls, x):
-        """Permute time and frequency dimension for time-frequency scattering"""
-        return x.transpose(*list(range(x.ndim - 2)), -1, -2)
-
-    @classmethod
     def conj_reflections(cls, x, ind_start, ind_end, k, N, pad_left, pad_right,
                          trim_tm):
         return agnostic.conj_reflections(cls, x, ind_start, ind_end, k, N,
