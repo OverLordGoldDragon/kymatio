@@ -1,7 +1,6 @@
 import math
 from ..backend.agnostic_backend import unpad_dyadic
-# from seizure_classification.preprocessing.utils import Decimate
-decimate = 1#Decimate()
+decimate = 1
 
 
 def timefrequency_scattering1d(
@@ -570,14 +569,6 @@ def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
                 S_2_fr_hat = B.subsample_fourier(S_2_fr_c,
                                                  2**lowpass_subsample_fr, axis=-2)
                 S_2_fr = B.irfft(S_2_fr_hat, axis=-2)
-            elif F_kind == 'fir':
-                assert oversampling_fr == 0  # TODO
-                if lowpass_subsample_fr != 0:
-                    S_2_fr = decimate(U_2_m, 2**lowpass_subsample_fr, axis=-2)
-                else:
-                    S_2_fr = U_2_m
-            else:
-                raise Exception("moron")
     else:
         S_2_fr = U_2_m
 
@@ -604,16 +595,6 @@ def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
     ind_start_tm = ind_start[trim_tm][total_conv_stride_tm]
     ind_end_tm   = ind_end[  trim_tm][total_conv_stride_tm]
 
-    if F_kind == 'fir':
-        # remove offset
-        axis = tuple(range(1, S_2_r.ndim))
-        if 'Torch' in B.__name__:
-            mn = S_2_r
-            for ax in axis:
-                mn = mn.min(ax, keepdim=True).values
-        else:
-            mn = S_2_r.min(axis)
-        S_2_r -= mn  # TODO replace with abs
     # `not average` and `n2 == -1` already unpadded
     if not average_global and not unpadded_tm:
         S_2_r = unpad(S_2_r, ind_start_tm, ind_end_tm)
