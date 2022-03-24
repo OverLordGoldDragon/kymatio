@@ -4,8 +4,8 @@ from ..core.scattering1d import scattering1d
 from ..core.timefrequency_scattering1d import timefrequency_scattering1d
 from ..utils import precompute_size_scattering
 from ...toolkit import pack_coeffs_jtfs
-from .base_frontend import (ScatteringBase1D, TimeFrequencyScatteringBase1D,
-                            _check_runtime_args_jtfs, _handle_args_jtfs)
+from .base_frontend import ScatteringBase1D, TimeFrequencyScatteringBase1D
+from ..filter_bank_jtfs import _check_runtime_args_jtfs, _handle_args_jtfs
 
 
 class ScatteringNumPy1D(ScatteringNumPy, ScatteringBase1D):
@@ -17,7 +17,8 @@ class ScatteringNumPy1D(ScatteringNumPy, ScatteringBase1D):
         ScatteringBase1D.__init__(self, J, shape, Q, T, max_order, average,
                 oversampling, out_type, pad_mode, max_pad_factor, analytic,
                 normalize, r_psi, backend)
-        ScatteringBase1D._instantiate_backend(self, 'kymatio.scattering1d.backend.')
+        ScatteringBase1D._instantiate_backend(self,
+                                              'kymatio.scattering1d.backend.')
         ScatteringBase1D.build(self)
         ScatteringBase1D.create_filters(self)
 

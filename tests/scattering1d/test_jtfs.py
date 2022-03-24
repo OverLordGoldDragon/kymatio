@@ -21,7 +21,7 @@ from utils import cant_import
 # NOTE: non-'numpy' skips `test_meta()` and `test_lp_sum()`
 default_backend = ('numpy', 'torch', 'tensorflow')[0]
 # set True to execute all test functions without pytest
-run_without_pytest = 1
+run_without_pytest = 0
 # set True to print assertion errors rather than raising them in `test_output()`
 output_test_print_mode = 1
 # set True to print assertion values of certain tests
@@ -467,8 +467,6 @@ def test_global_averaging():
 
 def test_lp_sum():
     """Test that filterbank energy renormalization works as expected."""
-    # TODO fix STFT or check it separately
-    # turns out this test never worked fully properly
     if default_backend != 'numpy':
         # filters don't change
         warnings.warn("`test_lp_sum()` skipped per non-'numpy' `default_backend`")
@@ -490,31 +488,58 @@ def test_lp_sum():
             "{} - {} >= {} | {}\n{}").format(lp.max(), peak_target, th, s,
                                              test_params_str)
 
-    def check_below(lp, test_params_str, psi_fs, k=None, psi_id=None):
-        th, peak_target, s = _get_th_and_text(k, psi_id, th_below)
-        if psi_id is not None:
-            psi_fs = psi_fs[psi_id]
-        elif k is not None:
-            psi_fs = [p[k] for p in psi_fs if k in p]
-        pk0, pk1 = np.argmax(psi_fs[0]), np.argmax(psi_fs[-1])
-        # spin down (analytic) will be (pk1, pk0), up will be (pk0, pk1)
-        first_peak, last_peak = min(pk0, pk1), max(pk0, pk1)
-        # lp min must be checked between peaks since it drops to 0 elsewhere
-        lp_min = lp[first_peak:last_peak + 1].min()
+    def check_below(lp, test_params_str, psi_fs, k=None, psi_id=None,
+                    sampling_filters_fr=None):
+        for is_cqt in (True, False):
+            _check_below(lp, test_params_str, psi_fs, k, psi_id,
+                         sampling_filters_fr, is_cqt)
 
-        assert peak_target - lp_min < th, (
-            "{} - {} >= {} | between peaks {} and {} | {}\n{}"
-            ).format(peak_target, lp_min, th, first_peak, last_peak,
-                     s, test_params_str)
+    def _check_below(lp, test_params_str, psi_fs, k, psi_id, sampling_filters_fr,
+                     is_cqt=True):
+        # get thresholds
+        th_loc = th_below if is_cqt else th_below_non_cqt
+        th, peak_target, s = _get_th_and_text(k, psi_id, th_loc)
+
+        # unpack filterbank
+        def cond(psi_is_cqt, n1_fr):
+            return ((is_cqt and psi_is_cqt[n1_fr]) or
+                    (not is_cqt and not psi_is_cqt[n1_fr]))
+
+        if psi_id is not None:
+            psi_is_cqt = psi_fs['is_cqt'][psi_id]
+            psis = [p for n1_fr, p in enumerate(psi_fs[psi_id])
+                    if cond(psi_is_cqt, n1_fr)]
+        elif k is not None:
+            psi_is_cqt = [p['is_cqt'] for p in psi_fs]
+            psis = [p[k] for n1_fr, p in enumerate(psi_fs)
+                    if k in p and cond(psi_is_cqt, n1_fr)]
+
+        if len(psis) == 0:
+            # all CQT or non-CQT, pass
+            assert (not is_cqt or
+                    # has no `is_cqt==True`
+                    psi_id > 0 and sampling_filters_fr == 'recalibrate')
+        else:
+            pk0, pk1 = np.argmax(psis[0]), np.argmax(psis[-1])
+            # spin down (analytic) will be (pk1, pk0), up will be (pk0, pk1)
+            first_peak, last_peak = min(pk0, pk1), max(pk0, pk1)
+            # lp min must be checked between peaks since it drops to 0 elsewhere
+            lp_min = lp[first_peak:last_peak + 1].min()
+
+            assert peak_target - lp_min < th, (
+                "{} - {} >= {} | between peaks {} and {} | {}\n{}\nis_cqt={}"
+                ).format(peak_target, lp_min, th, first_peak, last_peak,
+                         s, test_params_str, is_cqt)
 
     N = 1024
     J = int(np.log2(N))
-    common_params = dict(shape=N, J=J, Q_fr=3, frontend=default_backend)
+    # ensure total LP sum is poorly behaved (but does not affect psi-only LP sum)
+    T = 2**(J - 1)
+
+    common_params = dict(shape=N, J=J, T=T, Q_fr=3, frontend=default_backend)
     th_above = 1.5e-2
     th_below = .5
-
-    # TODO the <3 filter case with re-applying scaling factors does not
-    # account for severe distortion via insufficient max_pad_factor_fr
+    th_below_non_cqt = .8
 
     for Q in (1, 8, 16):
       for r_psi in (np.sqrt(.5), .85):
@@ -524,22 +549,20 @@ def test_lp_sum():
               aligned = bool(sampling_filters_fr != 'recalibrate')
               test_params = dict(Q=Q, r_psi=r_psi, max_pad_factor=max_pad_factor,
                                  max_pad_factor_fr=max_pad_factor_fr,
-                                 sampling_filters_fr=sampling_filters_fr,
-                                 # ensure total LP sum is poorly behaved
-                                 # (but does not affect psi-only LP sum)
-                                 T=2**(common_params['J'] - 1))
+                                 sampling_filters_fr=sampling_filters_fr)
               test_params_str = '\n'.join(f'{k}={v}' for k, v in
                                           test_params.items())
               try:
-                  jtfs = TimeFrequencyScattering1D(**common_params, **test_params,
-                                                   aligned=aligned)
+                  with warnings.catch_warnings(record=True) as ws:
+                      jtfs = TimeFrequencyScattering1D(
+                          **common_params, **test_params, aligned=aligned)
               except Exception as e:
                   print(test_params_str)
                   raise e
 
-              # temporal filterbank
+              # temporal filterbank ##########################################
+              # others are duplicate in time
               if sampling_filters_fr == 'resample' and max_pad_factor_fr is None:
-                  # others are duplicate in time
                   for order, psi_fs in enumerate([jtfs.psi1_f, jtfs.psi2_f]):
                       for k in psi_fs[-1]:
                           if not isinstance(k, int):
@@ -551,34 +574,29 @@ def test_lp_sum():
                           check_above(lp, test_params_str, k=k)
                           check_below(lp, test_params_str, psi_fs, k=k)
 
-              # frequential filterbank
-              for s1_fr, psi_fs in enumerate([jtfs.psi1_f_fr_up,
-                                              jtfs.psi1_f_fr_down]):
-                  for psi_id in psi_fs:
-                      if not isinstance(psi_id, int):
-                          continue
-                      lp = 0
-                      for p in psi_fs[psi_id]:
-                          lp += np.abs(p)**2
+              # frequential filterbank #######################################
+              if (max_pad_factor_fr == 1 and
+                      any("max_pad_factor" in str(w.message)
+                          for w in ws)):
+                  pass
+              else:
+                  for s1_fr, psi_fs in enumerate([jtfs.psi1_f_fr_up,
+                                                  jtfs.psi1_f_fr_down]):
+                      for psi_id in psi_fs:
+                          if not isinstance(psi_id, int):
+                              continue
+                          elif (sampling_filters_fr == 'exclude' and
+                                    max_pad_factor_fr == 1 and
+                                    len(psi_fs[psi_id]) <= 3):
+                              # implem can't account for this case
+                              continue
+                          lp = 0
+                          for p in psi_fs[psi_id]:
+                              lp += np.abs(p)**2
 
-                      try:
                           check_above(lp, test_params_str, psi_id=psi_id)
-                      except Exception as e:
-                          if (max_pad_factor_fr == 1 or
-                                  sampling_filters_fr == 'recalibrate'):
-                              warnings.warn("small pad or recalibrate "
-                                            "botched with\n" + str(e))
-                          else:
-                              raise e
-                      try:
-                          check_below(lp, test_params_str, psi_fs, psi_id=psi_id)
-                      except Exception as e:
-                          if sampling_filters_fr == 'recalibrate':
-                              warnings.warn("'recalibrate' botched with\n"
-                                            + str(e))  # TODO
-                          else:
-                              print(e)
-                              # raise e
+                          check_below(lp, test_params_str, psi_fs, psi_id=psi_id,
+                                      sampling_filters_fr=sampling_filters_fr)
 
               # assert same peak values (symmetry)
               for psi_id in jtfs.psi1_f_fr_up:
@@ -1763,7 +1781,7 @@ if __name__ == '__main__':
         test_max_pad_factor_fr()
         test_out_exclude()
         test_global_averaging()
-        # test_lp_sum()
+        test_lp_sum()
         test_compute_temporal_width()
         test_tensor_padded()
         test_pack_coeffs_jtfs()

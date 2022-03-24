@@ -6,8 +6,8 @@ from ..core.scattering1d import scattering1d
 from ..core.timefrequency_scattering1d import timefrequency_scattering1d
 from ..utils import precompute_size_scattering
 from ...toolkit import pack_coeffs_jtfs
-from .base_frontend import (ScatteringBase1D, TimeFrequencyScatteringBase1D,
-                            _check_runtime_args_jtfs, _handle_args_jtfs)
+from .base_frontend import ScatteringBase1D, TimeFrequencyScatteringBase1D
+from ..filter_bank_jtfs import _check_runtime_args_jtfs, _handle_args_jtfs
 
 
 class ScatteringTorch1D(ScatteringTorch, ScatteringBase1D):
