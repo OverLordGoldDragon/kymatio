@@ -760,7 +760,7 @@ class _FrequencyScatteringBase(ScatteringBase):
                 # `pad_3D` overrides `max_pad_factor_fr`
                 _J_pad_fr = max(pad_boundeffs, pad_3D)  # TODO
                 # but not `min_to_pad_bound_effs`
-                _J_pad_fr = min(min_to_pad_bound_effs, _J_pad_fr)
+                # _J_pad_fr = min(min_to_pad_bound_effs, _J_pad_fr)
 
             # account for stride
             min_to_pad_stride = max(self.total_conv_stride_over_U1s[scale_diff])
