@@ -2,7 +2,7 @@
 def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
         ind_start=None, ind_end=None, oversampling=0,
         max_order=2, average=True, size_scattering=(0, 0, 0),
-        out_type='array'):
+        out_type='array', average_global=None):
     """
     Main function implementing the 1-D scattering transform.
 
@@ -64,6 +64,7 @@ def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
     irfft = backend.irfft
     cdgmm = backend.cdgmm
     concatenate = backend.concatenate
+    mean = backend.mean
 
 
     # S is simply a dictionary if we do not perform the averaging...
@@ -107,10 +108,12 @@ def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
         # Take the modulus
         U_1_m = modulus(U_1_c)
 
-        if average or max_order > 1:
+        if (average and not average_global) or max_order > 1:
             U_1_hat = rfft(U_1_m)
 
-        if average:
+        if average_global:
+            S_1 = mean(U_1_m, axis=-1)
+        elif average:
             # Convolve with phi_J
             k1_J = max(log2_T - k1 - oversampling, 0)
             S_1_c = cdgmm(U_1_hat, phi[k1])
@@ -143,7 +146,9 @@ def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
 
                     U_2_m = modulus(U_2_c)
 
-                    if average:
+                    if average_global:
+                        S_2 = mean(U_2_m, axis=-1)
+                    elif average:
                         U_2_hat = rfft(U_2_m)
 
                         # Convolve with phi_J
@@ -153,7 +158,8 @@ def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
                         S_2_hat = subsample_fourier(S_2_c, 2**k2_J)
                         S_2_r = irfft(S_2_hat)
 
-                        S_2 = unpad(S_2_r, ind_start[k1 + k2 + k2_J], ind_end[k1 + k2 + k2_J])
+                        S_2 = unpad(S_2_r, ind_start[k1 + k2 + k2_J],
+                                    ind_end[k1 + k2 + k2_J])
                     else:
                         S_2 = unpad(U_2_m, ind_start[k1 + k2], ind_end[k1 + k2])
 

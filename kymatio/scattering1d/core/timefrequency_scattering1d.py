@@ -17,8 +17,8 @@ def timefrequency_scattering1d(
         out_exclude = []
     N = x.shape[-1]
     commons = (B, scf, out_exclude, aligned, F_kind, oversampling_fr, average_fr,
-               out_3D, oversampling, average, average_global, average_global_phi,
-               unpad, log2_T, phi, ind_start, ind_end, N)
+               out_3D, paths_exclude, oversampling, average, average_global,
+               average_global_phi, unpad, log2_T, phi, ind_start, ind_end, N)
 
     out_S_0 = []
     out_S_1_tm = []
@@ -165,12 +165,12 @@ def timefrequency_scattering1d(
             S_1_tm_hat = B.rfft(S_1_tm, axis=-2)
 
     if 'phi_t * phi_f' not in out_exclude:
-        n1_fr_subsample = 0  # no intermediate scattering
+        lowpass_subsample_fr = 0  # no lowpass after lowpass
 
         if scf.average_fr_global_phi:
             # take mean along frequency directly
             S_1 = B.mean(S_1_tm, axis=-2)
-            lowpass_subsample_fr = scf.log2_F
+            n1_fr_subsample = scf.log2_F
             log2_F_phi = scf.log2_F
         else:
             # this is usually 0
@@ -178,20 +178,15 @@ def timefrequency_scattering1d(
 
             # ensure stride is zero if `not average and aligned`
             scale_diff = 0
-            total_conv_stride_over_U1_phi = scf.total_conv_stride_over_U1s_phi[
-                scale_diff]
-            log2_F_phi = (scf.log2_F if (not average_fr and aligned) else
-                          total_conv_stride_over_U1_phi)
-            log2_F_phi_diff = scf.log2_F - log2_F_phi
-
-            lowpass_subsample_fr = max(total_conv_stride_over_U1_phi -
-                                       n1_fr_subsample - oversampling_fr, 0)
+            log2_F_phi = scf.log2_F_phis['phi'][scale_diff]
+            log2_F_phi_diff = scf.log2_F_phi_diffs['phi'][scale_diff]
+            n1_fr_subsample = max(scf.n1_fr_subsamples['phi'][scale_diff] -
+                                  oversampling_fr, 0)
 
             # Low-pass filtering over frequency
-            phi_fr = scf.phi_f_fr[log2_F_phi_diff][pad_diff][n1_fr_subsample]
+            phi_fr = scf.phi_f_fr[log2_F_phi_diff][pad_diff][0]
             S_1_c = B.cdgmm(S_1_tm_hat, phi_fr)
-            S_1_hat = B.subsample_fourier(S_1_c, 2**lowpass_subsample_fr,
-                                          axis=-2)
+            S_1_hat = B.subsample_fourier(S_1_c, 2**n1_fr_subsample, axis=-2)
             S_1_c = B.irfft(S_1_hat, axis=-2)
 
         # compute for unpad / energy correction
@@ -230,8 +225,8 @@ def timefrequency_scattering1d(
     ##########################################################################
     # Joint scattering: separable convolutions (along time & freq), and low-pass
     # `U1 * (psi_t * psi_f)` (up & down), and `U1 * (psi_t * phi_f)`
-    skip_spinned = bool('psi_t * psi_f_up'   in out_exclude and
-                        'psi_t * psi_f_down' in out_exclude)
+    skip_spinned = bool('psi_t * psi_f_up' in out_exclude and
+                        'psi_t * psi_f_dn' in out_exclude)
     if not (skip_spinned and 'psi_t * phi_f' in out_exclude):
         for n2 in range(len(psi2)):
             if n2 in paths_exclude.get('n2', {}):
@@ -325,8 +320,8 @@ def timefrequency_scattering1d(
     out['phi_t * phi_f'] = out_S_1['phi_t * phi_f']
     out['phi_t * psi_f'] = out_S_2['phi_t * psi_f'][0]
     out['psi_t * phi_f'] = out_S_2['psi_t * phi_f']
-    out['psi_t * psi_f_up']   = out_S_2['psi_t * psi_f'][0]
-    out['psi_t * psi_f_down'] = out_S_2['psi_t * psi_f'][1]
+    out['psi_t * psi_f_up'] = out_S_2['psi_t * psi_f'][0]
+    out['psi_t * psi_f_dn'] = out_S_2['psi_t * psi_f'][1]
 
     # delete excluded
     for pair in out_exclude:
@@ -373,47 +368,36 @@ def _frequency_scattering(Y_2_hat, j2, n2, pad_fr, k1_plus_k2, trim_tm, commons,
                           out_S_2, spin_down=True):
     # TODO user param "arithmetic_global_average_fr" for debug?
     (B, scf, out_exclude, aligned, _, oversampling_fr, average_fr, out_3D,
-     *_) = commons
+     paths_exclude, *_) = commons
 
     psi1_fs, spins = [], []
     if ('psi_t * psi_f_up' not in out_exclude or
             'psi_t * phi_f' not in out_exclude):
         psi1_fs.append(scf.psi1_f_fr_up)
         spins.append(1 if spin_down else 0)
-    if spin_down and 'psi_t * psi_f_down' not in out_exclude:
-        psi1_fs.append(scf.psi1_f_fr_down)
+    if spin_down and 'psi_t * psi_f_dn' not in out_exclude:
+        psi1_fs.append(scf.psi1_f_fr_dn)
         spins.append(-1)
 
     scale_diff = scf.scale_diffs[n2]
     psi_id = scf.psi_ids[scale_diff]
     pad_diff = scf.J_pad_frs_max_init - pad_fr
 
+    n1_fr_subsamples = scf.n1_fr_subsamples['spinned'][scale_diff]
+    log2_F_phi_diffs = scf.log2_F_phi_diffs['spinned'][scale_diff]
+
     # Transform over frequency + low-pass, for both spins (if `spin_down`)
     for s1_fr, (spin, psi1_f) in enumerate(zip(spins, psi1_fs)):
         for n1_fr in range(len(psi1_f[psi_id])):
-            # compute subsampling
+            if n1_fr in paths_exclude.get('n1_fr', {}):
+                continue
             j1_fr = psi1_f['j'][psi_id][n1_fr]
+
+            # compute subsampling
             total_conv_stride_over_U1 = scf.total_conv_stride_over_U1s[
                 scale_diff][n1_fr]
-
-            # TODO make `n1_fr_subsamples`?
-            # n1_fr_subsample & log2_F_phi
-            if average_fr and not scf.average_fr_global:
-                if scf.sampling_phi_fr == 'resample':
-                    log2_F_phi_diff = 0
-                elif scf.sampling_phi_fr == 'recalibrate':
-                    log2_F_phi_diff = max(scf.log2_F - total_conv_stride_over_U1,
-                                          0)
-                log2_F_phi = scf.log2_F - log2_F_phi_diff
-
-                max_subsample_before_phi_fr = log2_F_phi
-                sub_adj = min(j1_fr, total_conv_stride_over_U1,
-                              max_subsample_before_phi_fr)
-            else:
-                log2_F_phi_diff = None
-                sub_adj = (j1_fr if scf.average_fr_global else
-                           min(j1_fr, total_conv_stride_over_U1))
-            n1_fr_subsample = max(sub_adj - oversampling_fr, 0)
+            log2_F_phi_diff = log2_F_phi_diffs[n1_fr]
+            n1_fr_subsample = max(n1_fr_subsamples[n1_fr] - oversampling_fr, 0)
 
             # Wavelet transform over frequency
             Y_fr_c = B.cdgmm(Y_2_hat, psi1_f[psi_id][n1_fr])
@@ -449,16 +433,17 @@ def _frequency_lowpass(Y_2_hat, Y_2_arr, j2, n2, pad_fr, k1_plus_k2, trim_tm,
         log2_F_phi = scf.log2_F
         log2_F_phi_diff = scf.log2_F - log2_F_phi
     else:
-        # ensure stride is zero if `not average and aligned`
+        # fetch stride params
         scale_diff = scf.scale_diffs[n2]
         total_conv_stride_over_U1_phi = scf.total_conv_stride_over_U1s_phi[
             scale_diff]
-        n1_fr_subsample = max(total_conv_stride_over_U1_phi - oversampling_fr, 0)
+        n1_fr_subsample = max(scf.n1_fr_subsamples['phi'][scale_diff] -
+                              oversampling_fr, 0)
+        # scale params
+        log2_F_phi = scf.log2_F_phis['phi'][scale_diff]
+        log2_F_phi_diff = scf.log2_F_phi_diffs['phi'][scale_diff]
 
-        log2_F_phi = (scf.log2_F if (not average_fr and aligned) else
-                      total_conv_stride_over_U1_phi)
-        log2_F_phi_diff = scf.log2_F - log2_F_phi
-
+        # convolve
         Y_fr_c = B.cdgmm(Y_2_hat, scf.phi_f_fr[log2_F_phi_diff][pad_diff][0])
         Y_fr_hat = B.subsample_fourier(Y_fr_c, 2**n1_fr_subsample, axis=-2)
         Y_fr_c = B.ifft(Y_fr_hat, axis=-2)
@@ -477,7 +462,7 @@ def _frequency_lowpass(Y_2_hat, Y_2_arr, j2, n2, pad_fr, k1_plus_k2, trim_tm,
 
 def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
                    k1_plus_k2, total_conv_stride_over_U1, trim_tm, commons):
-    (B, scf, _, aligned, F_kind, oversampling_fr, average_fr, out_3D,
+    (B, scf, _, aligned, F_kind, oversampling_fr, average_fr, out_3D, _,
      oversampling, average, average_global, average_global_phi, unpad, log2_T,
      phi, ind_start, ind_end, N) = commons
 
@@ -569,6 +554,12 @@ def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
                 S_2_fr_hat = B.subsample_fourier(S_2_fr_c,
                                                  2**lowpass_subsample_fr, axis=-2)
                 S_2_fr = B.irfft(S_2_fr_hat, axis=-2)
+            elif F_kind == 'fir':
+                assert oversampling_fr == 0  # TODO
+                if lowpass_subsample_fr != 0:
+                    S_2_fr = decimate(U_2_m, 2**lowpass_subsample_fr, axis=-2)
+                else:
+                    S_2_fr = U_2_m
     else:
         S_2_fr = U_2_m
 

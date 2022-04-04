@@ -20,7 +20,7 @@ def compute_border_indices(log2_T, J, i0, i1):
     ----------
     log2_T : int
         Maximal subsampling by low-pass filtering is `2**log2_T`.
-    J : int
+    J : int / tuple[int]
         Maximal subsampling by band-pass filtering is `2**J`.
     i0 : int
         start index of the original signal at the finest resolution
@@ -33,6 +33,8 @@ def compute_border_indices(log2_T, J, i0, i1):
         original signal is in padded_signal[ind_start[j]:ind_end[j]]
         after subsampling by 2**j
     """
+    if isinstance(J, tuple):
+        J = max(J)
     ind_start = {0: i0}
     ind_end = {0: i1}
     for j in range(1, max(log2_T, J) + 1):
@@ -70,8 +72,8 @@ def compute_padding(J_pad, N):
 
 def compute_minimum_support_to_pad(N, J, Q, T, criterion_amplitude=1e-3,
                                        normalize='l1', r_psi=math.sqrt(0.5),
-                                       sigma0=1e-1, alpha=5., P_max=5, eps=1e-7,
-                                       pad_mode='reflect'):  # TODO alpha 4
+                                       sigma0=1e-1, alpha=4., P_max=5, eps=1e-7,
+                                       pad_mode='reflect'):
 
     """
     Computes the support to pad given the input size and the parameters of the
@@ -135,20 +137,20 @@ def compute_minimum_support_to_pad(N, J, Q, T, criterion_amplitude=1e-3,
         boundary error.
     """
     # compute params for calibrating, & calibrate
-    J_tentative = int(np.ceil(np.log2(N)))
-    J_support = J_tentative
-    J_scattering = J
-
     Q1, Q2 = Q if isinstance(Q, tuple) else (Q, 1)
     Q_temp = (max(Q1, 1), max(Q2, 1))  # don't pass in zero
-    N = 2 ** J_support
-    # compute without limit, will find necessary pad_psi then check in factories
-    xi_min = -1
+    N_init = N
 
-    # TODO analytic
-
+    # TODO analytic?
+    # `None` means `xi_min` is limitless. Since this method is used to compute
+    # padding, then we can't know what it is, so we compute worst case.
+    # If `max_pad_factor=None`, then the realized filterbank's (what's built)
+    # `xi_min` is also limitless. Else, it'll be greater, depending on
+    # `max_pad_factor`.
+    J_pad = None
     sigma_low, xi1, sigma1, j1s, _, xi2, sigma2, j2s, _ = \
-        calibrate_scattering_filters(J_scattering, Q_temp, T, xi_min=xi_min)
+        calibrate_scattering_filters(J, Q_temp, T, r_psi=r_psi, sigma0=sigma0,
+                                     alpha=alpha, J_pad=J_pad)
 
     # compute psi1_f with greatest time support, if requested
     if Q1 >= 1:
@@ -159,28 +161,31 @@ def compute_minimum_support_to_pad(N, J, Q, T, criterion_amplitude=1e-3,
         psi2_f_fn = lambda N: morlet_1d(N, xi2[-1], sigma2[-1],
                                         normalize=normalize, P_max=P_max, eps=eps)
     # compute lowpass
-    phi_f_fn = lambda N: gauss_1d(N, sigma_low, P_max=P_max, eps=eps)
+    phi_f_fn = lambda N: gauss_1d(N, sigma_low, normalize=normalize,
+                                  P_max=P_max, eps=eps)
 
     # compute for all cases as psi's time support might exceed phi's
     ca = dict(criterion_amplitude=criterion_amplitude)
-    N_min_phi = compute_minimum_required_length(phi_f_fn, N_init=N, **ca)
-    phi_halfwidth = compute_temporal_support(phi_f_fn(N_min_phi)[None], **ca)
+    N_min_phi = compute_minimum_required_length(phi_f_fn, N_init=N_init, **ca)
+    phi_halfsupport = compute_temporal_support(phi_f_fn(N_min_phi)[None], **ca)
 
     if Q1 >= 1:
-        N_min_psi1 = compute_minimum_required_length(psi1_f_fn, N_init=N, **ca)
-        psi1_halfwidth = compute_temporal_support(psi1_f_fn(N_min_psi1)[None],
-                                                  **ca)
+        N_min_psi1 = compute_minimum_required_length(psi1_f_fn, N_init=N_init,
+                                                     **ca)
+        psi1_halfsupport = compute_temporal_support(psi1_f_fn(N_min_psi1)[None],
+                                                    **ca)
     else:
-        psi1_halfwidth = -1  # placeholder
+        psi1_halfsupport = -1  # placeholder
     if Q2 >= 1:
-        N_min_psi2 = compute_minimum_required_length(psi2_f_fn, N_init=N, **ca)
-        psi2_halfwidth = compute_temporal_support(psi2_f_fn(N_min_psi2)[None],
-                                                  **ca)
+        N_min_psi2 = compute_minimum_required_length(psi2_f_fn, N_init=N_init,
+                                                     **ca)
+        psi2_halfsupport = compute_temporal_support(psi2_f_fn(N_min_psi2)[None],
+                                                    **ca)
     else:
-        psi2_halfwidth = -1
+        psi2_halfsupport = -1
 
-    # set min to pad based on each  # TODO halfsupport
-    pads = (phi_halfwidth, psi1_halfwidth, psi2_halfwidth)
+    # set min to pad based on each
+    pads = (phi_halfsupport, psi1_halfsupport, psi2_halfsupport)
 
     # can pad half as much
     if pad_mode == 'zero':
@@ -250,7 +255,7 @@ def precompute_size_scattering(J, Q, T, max_order=2, detail=False):
             return size_order0 + size_order1
 
 
-def compute_meta_scattering(J, Q, J_pad, T, r_psi=math.sqrt(.5), max_order=2):
+def compute_meta_scattering(J_pad, J, Q, T, r_psi=math.sqrt(.5), max_order=2):
     """Get metadata on the transform.
 
     This information specifies the content of each scattering coefficient,
@@ -304,9 +309,8 @@ def compute_meta_scattering(J, Q, J_pad, T, r_psi=math.sqrt(.5), max_order=2):
             The tuples indexing the corresponding scattering coefficient
             in the non-vectorized output.
     """
-    xi_min = (2 / 2**J_pad)  # leftmost peak at bin 2
     sigma_low, xi1s, sigma1s, j1s, is_cqt1s, xi2s, sigma2s, j2s, is_cqt2s = \
-        calibrate_scattering_filters(J, Q, T, r_psi=r_psi, xi_min=xi_min)
+        calibrate_scattering_filters(J, Q, T, r_psi=r_psi, J_pad=J_pad)
     log2_T = math.floor(math.log2(T))
 
     meta = {}
@@ -369,8 +373,8 @@ def compute_meta_scattering(J, Q, J_pad, T, r_psi=math.sqrt(.5), max_order=2):
 
 
 def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
-                      average_global_phi, oversampling,
-                      out_exclude, paths_exclude, scf):
+                      average_global_phi, oversampling, out_exclude,
+                      paths_exclude, scf):
     """Get metadata on the Joint Time-Frequency Scattering transform.
 
     This information specifies the content of each scattering coefficient,
@@ -478,32 +482,25 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
     """
     def _get_compute_params(n2, n1_fr):
         """Reproduce exact logic in `timefrequency_scattering1d.py`."""
+        # basics
         scale_diff = scf.scale_diffs[n2]
         J_pad_fr = scf.J_pad_frs[scale_diff]
-        total_conv_stride_over_U1 = (
-            scf.total_conv_stride_over_U1s[scale_diff][n1_fr])
-
-        # N_fr_padded, pad_diff
         N_fr_padded = 2**J_pad_fr
 
         # n1_fr_subsample, lowpass_subsample_fr ##############################
         global_averaged_fr = (scf.average_fr_global if n1_fr != -1 else
                               scf.average_fr_global_phi)
         if n2 == -1 and n1_fr == -1:
-            n1_fr_subsample = 0
+            lowpass_subsample_fr = 0
             if scf.average_fr_global_phi:
-                lowpass_subsample_fr = scf.log2_F
+                n1_fr_subsample = scf.log2_F
                 log2_F_phi = scf.log2_F
+                log2_F_phi_diff = 0
             else:
-                total_conv_stride_over_U1_phi = (
-                    scf.total_conv_stride_over_U1s_phi[scale_diff])
-                log2_F_phi = (scf.log2_F if (not scf.average_fr and scf.aligned)
-                              else total_conv_stride_over_U1_phi)
-
-                lowpass_subsample_fr = max(total_conv_stride_over_U1_phi -
-                                           n1_fr_subsample - scf.oversampling_fr,
-                                           0)
-            log2_F_phi_diff = scf.log2_F - log2_F_phi
+                log2_F_phi = scf.log2_F_phis['phi'][scale_diff]
+                log2_F_phi_diff = scf.log2_F_phi_diffs['phi'][scale_diff]
+                n1_fr_subsample = max(scf.n1_fr_subsamples['phi'][scale_diff] -
+                                      scf.oversampling_fr, 0)
 
         elif n1_fr == -1:
             lowpass_subsample_fr = 0
@@ -511,40 +508,21 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
                 total_conv_stride_over_U1_phi = min(J_pad_fr, scf.log2_F)
                 n1_fr_subsample = total_conv_stride_over_U1_phi
                 log2_F_phi = scf.log2_F
-                log2_F_phi_diff = scf.log2_F - log2_F_phi
+                log2_F_phi_diff = 0
             else:
-                total_conv_stride_over_U1_phi = (
-                    scf.total_conv_stride_over_U1s_phi[scale_diff])
-                n1_fr_subsample = max(total_conv_stride_over_U1_phi -
+                n1_fr_subsample = max(scf.n1_fr_subsamples['phi'][scale_diff] -
                                       scf.oversampling_fr, 0)
-
-                log2_F_phi = (scf.log2_F if (not scf.average_fr and scf.aligned)
-                              else total_conv_stride_over_U1_phi)
-                log2_F_phi_diff = scf.log2_F - log2_F_phi
+                log2_F_phi = scf.log2_F_phis['phi'][scale_diff]
+                log2_F_phi_diff = scf.log2_F_phi_diffs['phi'][scale_diff]
 
         else:
-            psi_id = scf.psi_ids[scale_diff]
-            j1_fr = j1_frs[psi_id][n1_fr]
-            if scf.average_fr and not scf.average_fr_global:
-                if scf.sampling_phi_fr == 'resample':
-                    log2_F_phi_diff = 0
-                elif scf.sampling_phi_fr == 'recalibrate':
-                    log2_F_phi_diff = max(log2_F - total_conv_stride_over_U1,
-                                          0)
-                log2_F_phi = log2_F - log2_F_phi_diff
-
-                max_subsample_before_phi_fr = log2_F_phi
-                sub_adj = min(j1_fr, total_conv_stride_over_U1,
-                              max_subsample_before_phi_fr)
-            else:
-                sub_adj = (j1_fr if scf.average_fr_global else
-                           min(j1_fr, total_conv_stride_over_U1))
-                if scf.average_fr_global:
-                    log2_F_phi, log2_F_phi_diff = scf.log2_F, 0
-                else:
-                    log2_F_phi, log2_F_phi_diff = None, None
-            n1_fr_subsample = max(sub_adj - scf.oversampling_fr, 0)
-
+            total_conv_stride_over_U1 = (
+                scf.total_conv_stride_over_U1s[scale_diff][n1_fr])
+            n1_fr_subsample = max(scf.n1_fr_subsamples['spinned'
+                                                       ][scale_diff][n1_fr] -
+                                  scf.oversampling_fr, 0)
+            log2_F_phi = scf.log2_F_phis['spinned'][scale_diff][n1_fr]
+            log2_F_phi_diff = scf.log2_F_phi_diffs['spinned'][scale_diff][n1_fr]
             if global_averaged_fr:
                 lowpass_subsample_fr = (total_conv_stride_over_U1 -
                                         n1_fr_subsample)
@@ -679,11 +657,9 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
     # set params
     log2_T = math.floor(math.log2(T))
     log2_F = math.floor(math.log2(scf.F))
-    N = 2**J_pad
-    xi_min = 2 / N  # leftmost peak at bin 2
     # extract filter meta
     sigma_low, xi1s, sigma1s, j1s, is_cqt1s, xi2s, sigma2s, j2s, is_cqt2s = \
-        calibrate_scattering_filters(J, Q, T, xi_min=xi_min, r_psi=r_psi)
+        calibrate_scattering_filters(J, Q, T, J_pad=J_pad, r_psi=r_psi)
     j1_frs = scf.psi1_f_fr_up['j']
 
     # fetch phi meta; must access `phi_f_fr` as `j1s_fr` requires sampling phi
@@ -698,13 +674,13 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
     inf = -1  # placeholder for infinity
     nan = math.nan
     coef_names = (
-        'S0',                  # (time)  zeroth order
-        'S1',                  # (time)  first order
-        'phi_t * phi_f',       # (joint) joint lowpass
-        'phi_t * psi_f',       # (joint) time lowpass
-        'psi_t * phi_f',       # (joint) freq lowpass
-        'psi_t * psi_f_up',    # (joint) spin up
-        'psi_t * psi_f_down',  # (joint) spin down
+        'S0',                # (time)  zeroth order
+        'S1',                # (time)  first order
+        'phi_t * phi_f',     # (joint) joint lowpass
+        'phi_t * psi_f',     # (joint) time lowpass
+        'psi_t * phi_f',     # (joint) freq lowpass
+        'psi_t * psi_f_up',  # (joint) spin up
+        'psi_t * psi_f_dn',  # (joint) spin down
     )
     for field in ('order', 'xi', 'sigma', 'j', 'is_cqt', 'n', 's', 'stride',
                   'key'):
@@ -771,7 +747,7 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
     # `psi_t * psi_f` coeffs
     for spin in (1, -1):
         pair = ('psi_t * psi_f_up' if spin == 1 else
-                'psi_t * psi_f_down')
+                'psi_t * psi_f_dn')
         for n2, j2 in enumerate(j2s):
             if j2 == 0:
                 continue
@@ -844,7 +820,7 @@ def compute_meta_jtfs(J_pad, J, Q, T, r_psi, sigma0, average, average_global,
 
     # ensure time / freq stride doesn't exceed log2_T / log2_F in averaged cases,
     # and J / J_fr in unaveraged
-    smax_t_nophi = log2_T if average else J[0]
+    smax_t_nophi = log2_T if average else max(J)
     if scf.average_fr and not (not scf.out_3D and not scf.aligned):
         smax_f_nophi = scf.log2_F
     else:

@@ -369,13 +369,13 @@ def compute_minimum_required_length(fn, N_init, max_N=None,
             N *= 2
             continue
 
-        p_halfwidth = compute_temporal_support(
+        p_halfsupport = compute_temporal_support(
             p_fr, criterion_amplitude=criterion_amplitude, warn=False)
 
         if N > 1e9:  # avoid crash
             raise Exception("couldn't satisfy stop criterion before `N > 1e9`; "
                             "check `fn`")
-        if 2 * p_halfwidth < N or (max_N is not None and N > max_N):
+        if 2 * p_halfsupport < N or (max_N is not None and N > max_N):
             break
         N *= 2
     return N
@@ -482,7 +482,7 @@ def compute_xi_max(Q):
 
 
 def compute_params_filterbank(sigma_min, Q, r_psi=math.sqrt(0.5), alpha=4.,
-                              xi_min=None):
+                              J_pad=None):
     """
     Computes the parameters of a Morlet wavelet filterbank.
 
@@ -513,9 +513,16 @@ def compute_params_filterbank(sigma_min, Q, r_psi=math.sqrt(0.5), alpha=4.,
         tolerance factor for the aliasing after subsampling.
         The larger alpha, the more conservative the value of maximal
         subsampling is. Defaults to 4.
-    N : int, optional
-        Used to compute `xi_min`, lower bound on `xi` to ensure every bandpass
-        is a valid wavelet (doesn't peak below FFT(x) bin 1).
+    J_pad : int, optional
+        Used to compute `xi_min`, lower bound on `xi` to ensure every bandpass is
+        a valid wavelet, i.e. doesn't peak below FFT(x_pad) bin 1. Else, we have
+
+          - extreme distortion (can't peak between 0 and 1)
+          - general padding may *introduce* new variability (frequencies) or
+            cancel existing ones (e.g. half cycle -> full cycle), so we set
+            `xi_min` w.r.t. padded rather than original input
+
+        https://github.com/kymatio/kymatio/pull/737
 
     Returns
     -------
@@ -536,7 +543,14 @@ def compute_params_filterbank(sigma_min, Q, r_psi=math.sqrt(0.5), alpha=4.,
     PhD Thesis, 2017
     https://tel.archives-ouvertes.fr/tel-01559667
     """
-    xi_min = xi_min if xi_min is not None else -1
+    # xi_min
+    if J_pad is not None:
+        # lowest peak at padded's bin 1
+        xi_min = 1 / 2**J_pad
+    else:
+        # no limit
+        xi_min = -1
+
     xi_max = compute_xi_max(Q)
     sigma_max = compute_sigma_psi(xi_max, Q, r=r_psi)
 
@@ -561,24 +575,28 @@ def compute_params_filterbank(sigma_min, Q, r_psi=math.sqrt(0.5), alpha=4.,
             current = move_one_dyadic_step(current, Q, alpha=alpha)
         # get the last key
         last_xi = xi[-1]
+
     # fill num_interm wavelets between last_xi and 0, both excluded
-    num_intermediate = Q - 1
+    num_intermediate = Q
     for q in range(1, num_intermediate + 1):
         factor = (num_intermediate + 1. - q) / (num_intermediate + 1.)
         new_xi = factor * last_xi
         new_sigma = sigma_min
-        if new_xi < xi_min:
-            break
+
         xi.append(new_xi)
         sigma.append(new_sigma)
         j.append(get_max_dyadic_subsampling(new_xi, new_sigma, alpha=alpha))
         is_cqt.append(False)
+        if new_xi < xi_min:
+            # break after appending one to guarantee tiling `xi_min`
+            # in case `xi` increments are too small
+            break
     # return results
     return xi, sigma, j, is_cqt
 
 
 def calibrate_scattering_filters(J, Q, T, r_psi=math.sqrt(0.5), sigma0=0.1,
-                                 alpha=4., xi_min=None):
+                                 alpha=4., J_pad=None):
     """
     Calibrates the parameters of the filters used at the 1st and 2nd orders
     of the scattering transform.
@@ -651,19 +669,19 @@ def calibrate_scattering_filters(J, Q, T, r_psi=math.sqrt(0.5), sigma0=0.1,
     sigma_min2 = sigma0 / math.pow(2, J2)
 
     xi1s, sigma1s, j1s, is_cqt1s = compute_params_filterbank(
-        sigma_min1, Q1, r_psi=r_psi1, alpha=alpha, xi_min=xi_min)
+        sigma_min1, Q1, r_psi=r_psi1, alpha=alpha, J_pad=J_pad)
     xi2s, sigma2s, j2s, is_cqt2s = compute_params_filterbank(
-        sigma_min2, Q2, r_psi=r_psi2, alpha=alpha, xi_min=xi_min)
+        sigma_min2, Q2, r_psi=r_psi2, alpha=alpha, J_pad=J_pad)
 
     # width of the low-pass filter
     sigma_low = sigma0 / T
     return sigma_low, xi1s, sigma1s, j1s, is_cqt1s, xi2s, sigma2s, j2s, is_cqt2s
 
 
-def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5),
-                              criterion_amplitude=1e-3, normalize='l1',
-                              max_subsampling=None, sigma0=0.1, alpha=4.,
-                              P_max=5, eps=1e-7, **kwargs):
+def scattering_filter_factory(N, J_support, J_scattering, Q, T,
+                              r_psi=math.sqrt(0.5), criterion_amplitude=1e-3,
+                              normalize='l1', max_subsampling=None, sigma0=0.1,
+                              alpha=4., P_max=5, eps=1e-7, **kwargs):
     """
     Builds in Fourier the Morlet filters used for the scattering transform.
 
@@ -678,6 +696,7 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
         2**k
     * 'width': temporal width (interval of temporal invariance, i.e. its "T")
     * 'support': temporal support (interval outside which wavelet is ~0)
+    # TODO 'j'
 
     Parameters
     ----------
@@ -763,12 +782,10 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
     PhD Thesis, 2017
     https://tel.archives-ouvertes.fr/tel-01559667
     """
-    N = 2**J_support
-    xi_min = 2 / N  # minimal peak at bin 2
     # compute the spectral parameters of the filters
     (sigma_low, xi1s, sigma1s, j1s, is_cqt1s, xi2s, sigma2s, j2s, is_cqt2s
      ) = calibrate_scattering_filters(J_scattering, Q, T, r_psi=r_psi,
-                                      sigma0=sigma0, alpha=alpha, xi_min=xi_min)
+                                      sigma0=sigma0, alpha=alpha, J_pad=J_support)
 
     # instantiate the dictionaries which will contain the filters
     phi_f = {}
@@ -777,6 +794,7 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
 
     # compute the band-pass filters of the second order,
     # which can take as input a subsampled
+    N_pad = 2**J_support
     for (n2, j2) in enumerate(j2s):
         # compute the current value for the max_subsampling,
         # which depends on the input it can accept.
@@ -793,7 +811,7 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
         # We first compute the filter without subsampling
         psi_f = {}
         psi_f[0] = morlet_1d(
-            N, xi2s[n2], sigma2s[n2], normalize=normalize,
+            N_pad, xi2s[n2], sigma2s[n2], normalize=normalize,
             P_max=P_max, eps=eps)
         # compute the filter after subsampling at all other subsamplings
         # which might be received by the network, based on this first filter
@@ -804,10 +822,10 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
         psi2_f.append(psi_f)
 
     # for the 1st order filters, the input is not subsampled so we
-    # can only compute them with N=2**J_support
+    # can only compute them with N_pad=2**J_support
     for (n1, j1) in enumerate(j1s):
         psi1_f.append({0: morlet_1d(
-            N, xi1s[n1], sigma1s[n1], normalize=normalize,
+            N_pad, xi1s[n1], sigma1s[n1], normalize=normalize,
             P_max=P_max, eps=eps)})
 
     # compute the low-pass filters phi
@@ -823,7 +841,7 @@ def scattering_filter_factory(J_support, J_scattering, Q, T, r_psi=math.sqrt(0.5
         max_sub_phi = max_subsampling
 
     # compute the filters at all possible subsamplings
-    phi_f[0] = gauss_1d(N, sigma_low, P_max=P_max, eps=eps)
+    phi_f[0] = gauss_1d(N_pad, sigma_low, normalize=normalize, P_max=P_max, eps=eps)
     for subsampling in range(1, max_sub_phi + 1):
         factor_subsampling = 2**subsampling
         # compute the low_pass filter
@@ -874,7 +892,7 @@ def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T):
     """
     # in case of `trim_tm` for JTFS
     phi = phi_f[0][0] if isinstance(phi_f[0], list) else phi_f[0]
-    kw = dict(phi_f=phi, log2_T=log2_T)
+    kw = dict(phi_f=phi, log2_T=log2_T, passes=3)
     psi1_f0 = [p[0] for p in psi1_f]
     psi2_f0 = [p[0] for p in psi2_f]
 
@@ -888,8 +906,8 @@ def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T):
                 psi2_f[n2][k] *= scaling_factors2[1][n2]
 
 
-def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
-                              J_fr, log2_F):
+def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_dn, phi_f_fr,
+                              J_fr, log2_F, sampling_psi_fr):
     """Energy-renormalize frequential filterbank; used by `base_frontend`.
     See `help(kymatio.scattering1d.filter_bank.energy_norm_filterbank)`.
     """
@@ -897,8 +915,8 @@ def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
                      if isinstance(psi_id, int))
     psi_id_break = None
     for psi_id in range(psi_id_max + 1):
-        psi_fs_up   = psi1_f_fr_up[psi_id]
-        psi_fs_down = psi1_f_fr_down[psi_id]
+        psi_fs_up = psi1_f_fr_up[psi_id]
+        psi_fs_dn = psi1_f_fr_dn[psi_id]
 
         if len(psi_fs_up) <= 3:  # possible with `sampling_psi_fr = 'exclude'`
             if psi_id == 0:
@@ -906,23 +924,27 @@ def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_down, phi_f_fr,
             psi_id_break = psi_id
             break
         phi_f = None  # not worth the hassle to account for
-        passes = 5  # can afford to do more without performance hit
-        scaling_factors = energy_norm_filterbank(psi_fs_up, psi_fs_down, phi_f,
-                                                 J_fr, log2_F, passes=passes)
+        passes = 10  # can afford to do more without performance hit
+        is_recalibrate = bool(sampling_psi_fr == 'recalibrate')
+        scaling_factors = energy_norm_filterbank(psi_fs_up, psi_fs_dn, phi_f,
+                                                 J_fr, log2_F,
+                                                 is_recalibrate=is_recalibrate,
+                                                 passes=passes)
 
     # we stopped normalizing when there were <= 3 filters ('exclude'),
     # but must still normalize the rest, so reuse factors from when we last had >3
     if psi_id_break is not None:
         for psi_id in range(psi_id_break, psi_id_max + 1):
-            if psi_id not in psi1_f_fr_down:
+            if psi_id not in psi1_f_fr_dn:
                 continue
-            for n1_fr in range(len(psi1_f_fr_down[psi_id])):
-                psi1_f_fr_up[  psi_id][n1_fr] *= scaling_factors[0][n1_fr]
-                psi1_f_fr_down[psi_id][n1_fr] *= scaling_factors[1][n1_fr]
+            for n1_fr in range(len(psi1_f_fr_dn[psi_id])):
+                psi1_f_fr_up[psi_id][n1_fr] *= scaling_factors[0][n1_fr]
+                psi1_f_fr_dn[psi_id][n1_fr] *= scaling_factors[1][n1_fr]
 
 
 def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=None,
-                           r_th=.3, passes=3, scaling_factors=None):
+                           r_th=.3, is_recalibrate=False, passes=3,
+                           scaling_factors=None):
     """Rescale wavelets such that their frequency-domain energy sum
     (Littlewood-Paley sum) peaks at 2 for an analytic-only filterbank
     (e.g. time scattering for real inputs) or 1 for analytic + anti-analytic.
@@ -1096,9 +1118,11 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
 
     # warn if there are 3 or more shared peaks
     pidxs_either = list((peak_idxs if analytic_only else peak_idxs[0]).values())
-    if any(pidxs_either.count(idx) >= 3 for idx in pidxs_either):
-        warnings.warn("Found three wavelets with same peak freq, most likely per "
-                      "too small `max_pad_factor_fr`; energy norm may be poor")
+    th = 3 if is_recalibrate else 2  # at least one overlap likely in recalibrate
+    if any(pidxs_either.count(idx) >= th for idx in pidxs_either):
+        pad_varname = "max_pad_factor" if analytic_only else "max_pad_factor_fr"
+        warnings.warn(f"Found >={th} wavelets with same peak freq, most likely "
+                      f"per too small `{pad_varname}`; energy norm may be poor")
 
     # ensure LP sum peaks at 2 (analytic-only) or 1 (analytic + anti-analytic)
     def get_lp_sum():
@@ -1123,7 +1147,8 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
     if passes == 1:
         return scaling_factors
     return energy_norm_filterbank(psi_fs0, psi_fs1, phi_f, J, log2_T,
-                                  r_th, passes - 1, scaling_factors)
+                                  r_th, is_recalibrate, passes - 1,
+                                  scaling_factors)
 
 
 #### misc / long #############################################################

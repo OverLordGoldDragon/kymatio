@@ -282,7 +282,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         Returns 5D if `not None` *and* there's more than one sample.
 
     separate_lowpass : bool (default False)
-        If True, will pack spinned (`psi_t * psi_f_up`, `psi_t * psi_f_down`)
+        If True, will pack spinned (`psi_t * psi_f_up`, `psi_t * psi_f_dn`)
         and lowpass (`phi_t * phi_f`, `phi_t * psi_f`, `psi_t * phi_f`) pairs
         separately. Recommended for convolutions (see Structures & Ordinality).
 
@@ -308,10 +308,10 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
           - 1: `out` if False else
                `(out, out_phi_f, out_phi_t)`
           - 2: same as 1
-          - 3: `(out_up, out_down, out_phi_f)` if False else
-               `(out_up, out_down, out_phi_f, out_phi_t)`
-          - 4: `(out_up, out_down)` if False else
-               `(out_up, out_down, out_phi_t)`
+          - 3: `(out_up, out_dn, out_phi_f)` if False else
+               `(out_up, out_dn, out_phi_f, out_phi_t)`
+          - 4: `(out_up, out_dn)` if False else
+               `(out_up, out_dn, out_phi_t)`
 
         `out_phi_t` is `phi_t * psi_f` and `phi_t * phi_f` concatenated.
         `out_phi_f` is `psi_t * phi_f` for all configs except
@@ -373,11 +373,11 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
            This is the preferred structure for conceptualizing or debugging as
            it's how the computation graph unfolds (and so does information
            density, as `N_fr` varies along `n2`).
-        3. It's 2, but split into ordinal pairs - `out_up, out_down, out_phi`
+        3. It's 2, but split into ordinal pairs - `out_up, out_dn, out_phi`
            suited for convolving over last three dims. These still include
            `phi_t * psi_f` pairs, so for strict ordinality the first slice
            should drop (e.g. `out_up[1:]`).
-        4. It's 3, but only `out_up, out_down`, and each includes `psi_t * phi_f`.
+        4. It's 3, but only `out_up, out_dn`, and each includes `psi_t * phi_f`.
            If this "soft ordinality" is acceptable then `phi_t * psi_f` pairs
            should be kept.
         5. `n2` and `n1_fr` are flattened into one dimension. The resulting
@@ -497,7 +497,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         if structure in (1, 2):
             combined, combined_phi_t, combined_phi_f = combined_all
         else:
-            (combined_up, combined_down, combined_phi_t, combined_phi_f
+            (combined_up, combined_dn, combined_phi_t, combined_phi_f
              ) = combined_all
 
         # compute pad params
@@ -546,19 +546,19 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
                    (out, out_phi_f, out_phi_t))
 
         elif structure in (3, 4):
-            out_up   = tensor_padded(combined_up,   **kw)
-            out_down = tensor_padded(combined_down, **kw)
-            out_up   = process_dims(out_up)
-            out_down = process_dims(out_down)
+            out_up = tensor_padded(combined_up, **kw)
+            out_dn = tensor_padded(combined_dn, **kw)
+            out_up = process_dims(out_up)
+            out_dn = process_dims(out_dn)
 
             if structure == 3:
-                out = ((out_up, out_down, out_phi_f) if not separate_lowpass else
-                       (out_up, out_down, out_phi_f, out_phi_t))
+                out = ((out_up, out_dn, out_phi_f) if not separate_lowpass else
+                       (out_up, out_dn, out_phi_f, out_phi_t))
             else:
                 if not separate_lowpass:
-                    out = (out_up, out_down)
+                    out = (out_up, out_dn)
                 else:
-                    out = (out_up, out_down, out_phi_t)
+                    out = (out_up, out_dn, out_phi_t)
 
         # sanity checks ##########################################################
         phis = dict(out_phi_t=out_phi_t, out_phi_f=out_phi_f)
@@ -597,7 +597,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
                     "{} != {} | {} | {}, {}".format(op.shape[fr_dim], ref_fr_len,
                                                     name, op.shape, ref.shape))
         if structure in (3, 4):
-            assert out_up.shape == out_down.shape, (out_up.shape, out_down.shape)
+            assert out_up.shape == out_dn.shape, (out_up.shape, out_dn.shape)
 
         if not recursive:
             # drop batch dim; `None` in case of `out_exclude`
@@ -627,7 +627,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         if structure in (1, 2):
             combined_s = []
         elif structure in (3, 4):
-            combined_up_s, combined_down_s = [], []
+            combined_up_s, combined_dn_s = [], []
 
         for sample_idx in range(n_samples):
             combined_all = pack_coeffs_jtfs(Scx, meta, structure, sample_idx,
@@ -640,13 +640,13 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
                 combined_s.append(combined_all[0])
             elif structure in (3, 4):
                 combined_up_s.append(combined_all[0])
-                combined_down_s.append(combined_all[1])
+                combined_dn_s.append(combined_all[1])
 
         phis = (combined_phi_t_s, combined_phi_f_s)
         if structure in (1, 2):
             combined_all_s = (combined_s, *phis)
         elif structure in (3, 4):
-            combined_all_s = (combined_up_s, combined_down_s, *phis)
+            combined_all_s = (combined_up_s, combined_dn_s, *phis)
         out = combined_to_tensor(combined_all_s, recursive=True)
         return out
 
@@ -690,7 +690,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
                                  "shape = %s" % str(coef.shape))
 
     # check that all necessary pairs are present
-    pairs = ('psi_t * psi_f_up', 'psi_t * psi_f_down', 'psi_t * phi_f',
+    pairs = ('psi_t * psi_f_up', 'psi_t * psi_f_dn', 'psi_t * phi_f',
              'phi_t * psi_f', 'phi_t * phi_f')
     # structure 4 requires `psi_t * phi_f`
     okay_to_exclude = (pairs[-3:] if structure != 4 else
@@ -799,10 +799,10 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
 
     # pack these for later
     # reverse `psi_t` ordering
-    combined_down = packed['psi_t * psi_f_down'][::-1]
+    combined_dn = packed['psi_t * psi_f_dn'][::-1]
     # reverse `psi_f` ordering
-    for n2 in range(len(combined_down)):
-        combined_down[n2] = combined_down[n2][::-1]
+    for n2 in range(len(combined_dn)):
+        combined_dn[n2] = combined_dn[n2][::-1]
 
     # pack phi_t
     if 'phi_t * psi_f' in Scx_pairs:
@@ -827,12 +827,12 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
                 combined[n2_idx].append(c)
                 # not needed in 3, will duplicate in 1 and 2
                 if structure == 4:
-                    combined_down[n2_idx].insert(0, c)
+                    combined_dn[n2_idx].insert(0, c)
 
-        l0, l1 = len(combined[0]), len(combined_down[0])
+        l0, l1 = len(combined[0]), len(combined_dn[0])
         assert (l0 == l1 if structure == 4 else l0 == l1 + 1), (l0, l1)
     else:
-        l0, l1 = len(combined[0]), len(combined_down[0])
+        l0, l1 = len(combined[0]), len(combined_dn[0])
         assert l0 == l1, (l0, l1)
 
     # `None` means they aren't turned to tensors, so only set if need
@@ -853,11 +853,11 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         combined_phi_f.insert(0, c_phi_t[0][_len//2:_len//2 + 1])
 
     # pack spinned (+ `phi` maybe)
-    assert len(combined_down) == len(combined), (
-        len(combined_down), len(combined))
+    assert len(combined_dn) == len(combined), (
+        len(combined_dn), len(combined))
     if structure in (1, 2):
         for n2_idx in range(len(combined)):
-            combined[n2_idx].extend(combined_down[n2_idx])
+            combined[n2_idx].extend(combined_dn[n2_idx])
         if not separate_lowpass:
             combined.insert(0, c_phi_t[0])
         combined_up = None
@@ -866,14 +866,14 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
         if not separate_lowpass:
             _len = len(c_phi_t[0])
             # `3` never includes `phi_f` in spinned, so exclude `phi_t * phi_f`
-            idx_up   = _len//2 + 1 if structure == 4 else _len//2
-            idx_down = _len//2     if structure == 4 else _len//2 + 1
-            combined_up.insert(  0, c_phi_t[0][:idx_up])
-            combined_down.insert(0, c_phi_t[0][idx_down:])
+            idx_up = _len//2 + 1 if structure == 4 else _len//2
+            idx_dn = _len//2     if structure == 4 else _len//2 + 1
+            combined_up.insert(0, c_phi_t[0][:idx_up])
+            combined_dn.insert(0, c_phi_t[0][idx_dn:])
 
     # reverse ordering of `n1` ###############################################
     if combined_up is not None:
-        cbs = [combined_up, combined_down]
+        cbs = [combined_up, combined_dn]
     else:
         cbs = [combined]
     if combined_phi_t is not None:
@@ -891,7 +891,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
 
     if combined_up is not None:
         combined_up   = cbs_new.pop(0)
-        combined_down = cbs_new.pop(0)
+        combined_dn = cbs_new.pop(0)
     else:
         combined = cbs_new.pop(0)
     if combined_phi_t is not None:
@@ -903,7 +903,7 @@ def pack_coeffs_jtfs(Scx, meta, structure=1, sample_idx=None,
     # finalize ###############################################################
     phis = (combined_phi_t, combined_phi_f)
     combined_all = ((combined, *phis) if combined_up is None else
-                    (combined_up, combined_down, *phis))
+                    (combined_up, combined_dn, *phis))
     if recursive:
         return combined_all
     return combined_to_tensor(combined_all, recursive=False)
@@ -1118,7 +1118,7 @@ def coeff_energy_ratios(Scx, meta, down_to_up=True, max_to_eps_ratio=10000):
         `jtfs.meta()`.
 
     down_to_up : bool (default True)
-        Whether to take `E_down / E_up` (True) or `E_up / E_down` (False).
+        Whether to take `E_dn / E_up` (True) or `E_up / E_dn` (False).
         Note, the actual similarities are opposite, as "down" means convolution
         with down, which is cross-correlation with up.
 
@@ -1136,7 +1136,7 @@ def coeff_energy_ratios(Scx, meta, down_to_up=True, max_to_eps_ratio=10000):
 
     # compute ratios
     l2s = {}
-    pairs = ('psi_t * psi_f_down', 'psi_t * psi_f_up')
+    pairs = ('psi_t * psi_f_dn', 'psi_t * psi_f_up')
     if not down_to_up:
         pairs = pairs[::-1]
     for pair in pairs:
@@ -1443,7 +1443,7 @@ def est_energy_conservation(x, sc=None, T=None, F=None, J=None, J_fr=None,
     else:
         E_common = sum(ES[pair] for pair in ('S0', 'psi_t * phi_f',
                                              'psi_t * psi_f_up',
-                                             'psi_t * psi_f_down'))
+                                             'psi_t * psi_f_dn'))
         E_v1 = E_common + ES['phi_t * phi_f'] + ES['phi_t * psi_f']
         E_v2 = E_common + ES['S1']
         ESr['total_v1'], ESr['total_v2'] = E_v1 / Ex, E_v2 / Ex
@@ -1470,7 +1470,7 @@ def validate_filterbank_tm(sc=None, psi1_f=None, psi2_f=None, phi_f=None,
     Parameters
     ----------
         sc : `Scattering1D` / `TimeFrequencyScattering1D` / None
-            If None, then `psi1_f_fr_up`, `psi1_f_fr_down`, and `phi_f_fr` must
+            If None, then `psi1_f_fr_up`, `psi1_f_fr_dn`, and `phi_f_fr` must
             be not None.
 
         psi1_f : list[tensor] / None
@@ -1517,7 +1517,7 @@ def validate_filterbank_tm(sc=None, psi1_f=None, psi2_f=None, phi_f=None,
     return data1, data2
 
 
-def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
+def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_dn=None,
                            phi_f_fr=None, psi_id=0, criterion_amplitude=1e-3,
                            verbose=True):
     """Runs `validate_filterbank()` on frequential filters of JTFS.
@@ -1525,14 +1525,14 @@ def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
     Parameters
     ----------
         sc : `TimeFrequencyScattering1D` / None
-            JTFS instance. If None, then `psi1_f_fr_up`, `psi1_f_fr_down`, and
+            JTFS instance. If None, then `psi1_f_fr_up`, `psi1_f_fr_dn`, and
             `phi_f_fr` must be not None.
 
         psi1_f_fr_up : list[tensor] / None
             Spin up bandpasses in frequency domain.
             Overridden if `sc` is not None.
 
-        psi1_f_fr_down : list[tensor] / None
+        psi1_f_fr_dn : list[tensor] / None
             Spin down bandpasses in frequency domain.
             Overridden if `sc` is not None.
 
@@ -1551,19 +1551,19 @@ def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
 
     Returns
     -------
-        data_up, data_down : dict, dict
+        data_up, data_dn : dict, dict
             Returns from `validate_filterbank()` for `psi1_f_fr_up` and
-            `psi1_f_fr_down`.
+            `psi1_f_fr_dn`.
     """
     if sc is None:
         assert not any(arg is None for arg in
-                       (psi1_f_fr_up, psi1_f_fr_down, phi_f_fr))
+                       (psi1_f_fr_up, psi1_f_fr_dn, phi_f_fr))
     else:
-        psi1_f_fr_up, psi1_f_fr_down, phi_f_fr = [
+        psi1_f_fr_up, psi1_f_fr_dn, phi_f_fr = [
             getattr(sc, k) for k in
-            ('psi1_f_fr_up', 'psi1_f_fr_down', 'phi_f_fr')]
+            ('psi1_f_fr_up', 'psi1_f_fr_dn', 'phi_f_fr')]
 
-    psi1_f_fr_up, psi1_f_fr_down = psi1_f_fr_up[psi_id], psi1_f_fr_down[psi_id]
+    psi1_f_fr_up, psi1_f_fr_dn = psi1_f_fr_up[psi_id], psi1_f_fr_dn[psi_id]
     phi_f_fr = phi_f_fr[0][0][0]
 
     if verbose:
@@ -1573,10 +1573,10 @@ def validate_filterbank_fr(sc=None, psi1_f_fr_up=None, psi1_f_fr_down=None,
                                   for_real_inputs=False, unimodal=True)
     if verbose:
         print("\n\n// SPIN DOWN")
-    data_down = validate_filterbank(psi1_f_fr_down, phi_f_fr, criterion_amplitude,
-                                    verbose=verbose,
-                                    for_real_inputs=False, unimodal=True)
-    return data_up, data_down
+    data_dn = validate_filterbank(psi1_f_fr_dn, phi_f_fr, criterion_amplitude,
+                                  verbose=verbose,
+                                  for_real_inputs=False, unimodal=True)
+    return data_up, data_dn
 
 
 def validate_filterbank(psi_fs, phi_f=None, criterion_amplitude=1e-3,
@@ -2148,7 +2148,7 @@ def _echirp_fn(fmin, fmax, tmin=0, tmax=1):
 
 
 def fdts(N, n_partials=2, total_shift=None, f0=None, seg_len=None,
-         partials_f_sep=1.6, endpoint=False):
+         partials_f_sep=1.6, global_shift=0, endpoint=False):
     """Generate windowed tones with Frequency-dependent Time Shifts (FDTS)."""
     total_shift = total_shift or N//16
     f0 = f0 or N//12
@@ -2169,6 +2169,10 @@ def fdts(N, n_partials=2, total_shift=None, f0=None, seg_len=None,
         xs_partial = np.roll(x_partial, partial_shift)
         x += x_partial
         xs += xs_partial
+
+    if global_shift:
+        x = np.roll(x, global_shift)
+        xs = np.roll(xs, global_shift)
     return x, xs
 
 #### misc ###################################################################

@@ -132,7 +132,7 @@ def filterbank_heatmap(scattering, first_order=None, second_order=False,
             to_time_and_viz(scattering.psi1_f_fr_up, 'Frequential up',
                             get_psi)
         if frequential[1]:
-            to_time_and_viz(scattering.psi1_f_fr_down, 'Frequential down',
+            to_time_and_viz(scattering.psi1_f_fr_dn, 'Frequential down',
                             get_psi)
 
 
@@ -410,7 +410,7 @@ def filterbank_jtfs_1d(jtfs, zoom=0, psi_id=0, filterbank=True, lp_sum=False,
     # shorthand references
     p0 = jtfs.scf.phi_f_fr
     pup = jtfs.psi1_f_fr_up
-    pdn = jtfs.psi1_f_fr_down
+    pdn = jtfs.psi1_f_fr_dn
 
     # compute LP sum
     lp = 0
@@ -516,7 +516,7 @@ def filterbank_jtfs_2d(jtfs, part='real', zoomed=False, w=1, h=1, borders=False,
 
         # else get spinned wavelets ##########################################
         psi_spin = (jtfs.scf.psi1_f_fr_up if s_idx == 0 else
-                    jtfs.scf.psi1_f_fr_down)
+                    jtfs.scf.psi1_f_fr_dn)
         psi_f = psi_spin[_f_idx][0].squeeze()
         psi_t = jtfs.psi2_f[t_idx][0].squeeze()
 
@@ -771,7 +771,7 @@ def gif_jtfs_2d(Scx, meta, savedir='', base_name='jtfs2d', images_ext='.png',
 
     def _viz_spins(Scx, i, norm):
         kup = 'psi_t * psi_f_up'
-        kdn = 'psi_t * psi_f_down'
+        kdn = 'psi_t * psi_f_dn'
         sup = _get_coef(i, kup, meta_idx)
         sdn = _get_coef(i, kdn, meta_idx)
 
@@ -1093,7 +1093,7 @@ def energy_profile_jtfs(Scx, meta, x=None, pairs=None, kind='l2', flatten=False,
         Computes energies for these pairs in provided order. None will compute
         for all in default order:
             ('S0', 'S1', 'phi_t * phi_f', 'phi_t * psi_f', 'psi_t * phi_f',
-             'psi_t * psi_f_up', 'psi_t * psi_f_down')
+             'psi_t * psi_f_up', 'psi_t * psi_f_dn')
 
     kind : str['l1', 'l2']
         - L1: `sum(abs(x))`
@@ -1162,7 +1162,7 @@ def coeff_distance_jtfs(Scx0, Scx1, meta0, meta1=None, pairs=None, kind='l2',
         Computes distances for these pairs in provided order. None will compute
         for all in default order:
             ('S0', 'S1', 'phi_t * phi_f', 'phi_t * psi_f', 'psi_t * phi_f',
-             'psi_t * psi_f_up', 'psi_t * psi_f_down')
+             'psi_t * psi_f_up', 'psi_t * psi_f_dn')
 
     kind : str['l1', 'l2']
         - L1: `sum(abs(x))`
@@ -1727,7 +1727,7 @@ def _get_compute_pairs(pairs, meta):
     # enforce pair order
     if pairs is None:
         pairs_all = ('S0', 'S1', 'phi_t * phi_f', 'phi_t * psi_f',
-                     'psi_t * phi_f', 'psi_t * psi_f_up', 'psi_t * psi_f_down')
+                     'psi_t * phi_f', 'psi_t * psi_f_up', 'psi_t * psi_f_dn')
     else:
         pairs_all = pairs if not isinstance(pairs, str) else [pairs]
     compute_pairs = []
@@ -1761,7 +1761,7 @@ def _make_titles_jtfs(compute_pairs, target):
     # make `titles`
     titles = []
     pair_aliases = {'psi_t * phi_f': '* phi_f', 'phi_t * psi_f': 'phi_t *',
-                    'psi_t * psi_f_up': 'up', 'psi_t * psi_f_down': 'down'}
+                    'psi_t * psi_f_up': 'up', 'psi_t * psi_f_dn': 'down'}
     title = "%s | " % target
     for pair in compute_pairs:
         if pair in pair_aliases:

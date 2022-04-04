@@ -32,7 +32,7 @@ class ScatteringBase1D(ScatteringBase):
         self.pad_mode = pad_mode
         self.max_pad_factor = max_pad_factor
         self.analytic = analytic
-        self.normalize = normalize
+        self.normalize = normalize  # TODO
         self.r_psi = r_psi if isinstance(r_psi, tuple) else (r_psi, r_psi)
         self.backend = backend
 
@@ -82,33 +82,44 @@ class ScatteringBase1D(ScatteringBase):
         # check `normalize`
         supported = ('l1', 'l2', 'l1-energy', 'l2-energy')
         if self.normalize not in supported:
-            raise ValueError("unsupported `normalize`; must be one of: %s"
+            raise ValueError("unsupported `normalize`; must be one of: "
                              + ", ".join(supported))
 
         # ensure J2 <= J1
-        # assert self.J[1] <= self.J[0], self.J
+        # assert self.J[1] <= self.J[0], self.J  # TODO
         # ensure 2**J <= nextpow2(N)
-        mx = 2**math.ceil(math.log2(self.N))
-        if 2**(self.J[0]) > mx:
+        Np2up = 2**self.N_scale
+        if 2**max(self.J) > Np2up:
             raise ValueError(("2**J cannot exceed input length (rounded up to "
-                              "pow2) (got {} > {})".format(2**(self.J[0]), mx)))
+                              "pow2) (got {} > {})".format(
+                                  2**max(self.J), Np2up)))
+
+        # validate `max_pad_factor`
+        # 1/2**J < 1/Np2up so impossible to create wavelet without padding
+        if max(self.J) == self.N_scale and self.max_pad_factor == 0:
+            raise ValueError("`max_pad_factor` can't be 0 if "
+                             "J == log2(nextpow2(N)). Got, "
+                             "respectively, %s\n%s\n%s" % (
+                                 self.mad_pad_factor_fr, self.J, self.N_scale))
 
         # check T or set default
         if self.T is None:
-            self.T = 2**(self.J[0])
+            self.T = 2**max(self.J)
         elif self.T == 'global':
-            self.T == mx
-        elif self.T > self.N:
+            self.T == Np2up
+        elif self.T > Np2up:
             raise ValueError(("The temporal support T of the low-pass filter "
                               "cannot exceed input length (got {} > {})"
                               ).format(self.T, self.N))
+        # log2_T, global averaging
         self.log2_T = math.floor(math.log2(self.T))
-        self.average_global_phi = bool(self.T == mx)
+        self.average_global_phi = bool(self.T == Np2up)
         self.average_global = bool(self.average_global_phi and self.average)
+
 
         # Compute the minimum support to pad (ideally)
         min_to_pad, pad_phi, pad_psi1, pad_psi2 = compute_minimum_support_to_pad(
-            self.N, self.J[0], self.Q, self.T, r_psi=self.r_psi,
+            self.N, self.J, self.Q, self.T, r_psi=self.r_psi,
             sigma0=self.sigma0, alpha=self.alpha, P_max=self.P_max, eps=self.eps,
             criterion_amplitude=self.criterion_amplitude,
             normalize=self.normalize, pad_mode=self.pad_mode)
@@ -125,7 +136,7 @@ class ScatteringBase1D(ScatteringBase):
         self.pad_left, self.pad_right = compute_padding(self.J_pad, self.N)
         # compute start and end indices
         self.ind_start, self.ind_end = compute_border_indices(
-            self.log2_T, self.J[0], self.pad_left, 2**self.J_pad - self.pad_right)
+            self.log2_T, self.J, self.pad_left, 2**self.J_pad - self.pad_right)
 
         # record whether configuration yields second order filters
         meta = ScatteringBase1D.meta(self)
@@ -135,10 +146,10 @@ class ScatteringBase1D(ScatteringBase):
     def create_filters(self):
         # Create the filters
         self.phi_f, self.psi1_f, self.psi2_f = scattering_filter_factory(
-            self.J_pad, self.J, self.Q, self.T,
-            normalize=self.normalize,
-            criterion_amplitude=self.criterion_amplitude, r_psi=self.r_psi,
-            sigma0=self.sigma0, alpha=self.alpha, P_max=self.P_max, eps=self.eps)
+            self.N, self.J_pad, self.J, self.Q, self.T,
+            normalize=self.normalize,criterion_amplitude=self.criterion_amplitude,
+            r_psi=self.r_psi, sigma0=self.sigma0, alpha=self.alpha,
+            P_max=self.P_max, eps=self.eps)
 
         # energy norm
         if 'energy' in self.normalize:
@@ -165,7 +176,7 @@ class ScatteringBase1D(ScatteringBase):
         meta : dictionary
             See the documentation for `compute_meta_scattering()`.
         """
-        return compute_meta_scattering(self.J, self.Q, self.J_pad, self.T,
+        return compute_meta_scattering(self.J_pad, self.J, self.Q, self.T,
                                        r_psi=self.r_psi, max_order=self.max_order)
 
     def output_size(self, detail=False):
@@ -530,8 +541,8 @@ class TimeFrequencyScatteringBase1D():
                  sampling_filters_fr=('exclude', 'resample'),
                  max_pad_factor_fr=None, pad_mode_fr='conj-reflect-zero',
                  normalize='l1-energy', r_psi=math.sqrt(.5), oversampling_fr=0,
-                 out_3D=False, out_type='array', out_exclude=None,
-                 paths_exclude=None):
+                 out_3D=False, max_noncqt_fr=None, out_type='array',
+                 out_exclude=None, paths_exclude=None):
         self.J_fr = J_fr
         self.Q_fr = Q_fr
         self.F = F
@@ -546,6 +557,7 @@ class TimeFrequencyScatteringBase1D():
         self.normalize_fr = normalize
         self.r_psi_fr = r_psi
         self.out_3D = out_3D
+        self.max_noncqt_fr = max_noncqt_fr
         self.out_type = out_type
         self.out_exclude = out_exclude
         self.paths_exclude = paths_exclude
@@ -612,7 +624,7 @@ class TimeFrequencyScatteringBase1D():
             # ensure all names are valid
             supported = ('S0', 'S1', 'phi_t * phi_f', 'phi_t * psi_f',
                          'psi_t * phi_f', 'psi_t * psi_f_up',
-                         'psi_t * psi_f_down')
+                         'psi_t * psi_f_dn')
             for name in self.out_exclude:
                 if name not in supported:
                     raise ValueError(("'{}' is an invalid coefficient name; "
@@ -626,6 +638,13 @@ class TimeFrequencyScatteringBase1D():
             # F is processed further in `_FrequencyScatteringBase`
             self.F = self.Q[0]
 
+        # handle `max_noncqt_fr`
+        if self.max_noncqt_fr is not None:
+            if not isinstance(self.max_noncqt_fr, (str, int)):
+                raise ValueError("`max_noncqt_fr` must be str, int, or None")
+            if self.max_noncqt_fr == 'Q':
+                self.max_noncqt_fr = self.Q[0] // 2
+
         # frequential scattering object ######################################
         self._N_frs = self.get_N_frs()
         # number of psi1 filters
@@ -637,7 +656,8 @@ class TimeFrequencyScatteringBase1D():
             self.average_fr, self.aligned, self.oversampling_fr,
             self.sampling_filters_fr, self.out_type, self.out_3D,
             self.max_pad_factor_fr, self.pad_mode_fr, self.analytic,
-            self.normalize_fr, self.r_psi_fr, self._n_psi1_f, self.backend)
+            self.max_noncqt_fr, self.normalize_fr, self.r_psi_fr,
+            self._n_psi1_f, self.backend)
         self.finish_creating_filters()
 
         # handle `paths_exclude`
@@ -674,21 +694,31 @@ class TimeFrequencyScatteringBase1D():
         """This is equivalent to `len(x)` along frequency, which varies across
         `psi2`, so we compute for each.
         """
+        def is_cqt_if_need_cqt(n1):
+            if self.max_noncqt_fr is None:
+                return True
+            return n_non_cqts[n1] <= self.max_noncqt_fr
+
+        n_non_cqts = np.cumsum([not p['is_cqt'] for p in self.psi1_f])
+
         N_frs = []
         for n2 in range(len(self.psi2_f)):
             j2 = self.psi2_f[n2]['j']
             max_freq_nrows = 0
             if j2 != 0:
                 for n1 in range(len(self.psi1_f)):
-                    if j2 > self.psi1_f[n1]['j']:
+                    if j2 > self.psi1_f[n1]['j'] and is_cqt_if_need_cqt(n1):
                         max_freq_nrows += 1
+
                 # add rows for `j2 >= j1` up to `nextpow2` of current number
                 # to not change frequential padding scales
+                # but account for `cqt_fr`
                 max_freq_nrows_at_2gt1 = max_freq_nrows
                 p2up_nrows = int(2**math.ceil(math.log2(max_freq_nrows_at_2gt1)))
                 for n1 in range(len(self.psi1_f)):
                     if (j2 == self.psi1_f[n1]['j'] and
-                            max_freq_nrows < p2up_nrows):
+                            max_freq_nrows < p2up_nrows and
+                            is_cqt_if_need_cqt(n1)):
                         max_freq_nrows += 1
             N_frs.append(max_freq_nrows)
         return N_frs
@@ -711,7 +741,7 @@ class TimeFrequencyScatteringBase1D():
             if not isinstance(k, int):
                 phi_f[k] = v
 
-        diff = min(self.J[0] - self.log2_T, self.J_pad - self.N_scale)
+        diff = min(max(self.J) - self.log2_T, self.J_pad - self.N_scale)
         if diff > 0:
             for trim_tm in range(1, diff + 1):
                 # subsample in Fourier <-> trim in time
@@ -726,7 +756,7 @@ class TimeFrequencyScatteringBase1D():
                 pad_left, pad_right = compute_padding(self.J_pad - trim_tm,
                                                       self.N)
                 start, end = compute_border_indices(
-                    self.log2_T, self.J[0], pad_left, pad_left + self.N)
+                    self.log2_T, self.J, pad_left, pad_left + self.N)
                 ind_start[trim_tm] = start
                 ind_end[trim_tm] = end
         self.ind_start, self.ind_end = ind_start, ind_end
@@ -756,7 +786,7 @@ class TimeFrequencyScatteringBase1D():
                 'average_fr', 'average_fr_global', 'aligned', 'oversampling_fr',
                 'F', 'log2_F', 'max_order_fr', 'max_pad_factor_fr', 'out_3D',
                 'sampling_filters_fr', 'sampling_psi_fr', 'sampling_phi_fr',
-                'phi_f_fr', 'psi1_f_fr_up', 'psi1_f_fr_down')
+                'phi_f_fr', 'psi1_f_fr_up', 'psi1_f_fr_dn')
 
     def __getattr__(self, name):
         # access key attributes via frequential class
@@ -1217,7 +1247,7 @@ class TimeFrequencyScatteringBase1D():
         All names (JTFS pairs, except 'S0', 'S1'):
 
             - 'S0', 'S1', 'phi_t * phi_f', 'phi_t * psi_f', 'psi_t * phi_f',
-              'psi_t * psi_f_up', 'psi_t * psi_f_down'
+              'psi_t * psi_f_up', 'psi_t * psi_f_dn'
     """
 
     _doc_attrs = \
@@ -1275,7 +1305,7 @@ class TimeFrequencyScatteringBase1D():
         with "up" spin.
         See `help(kymatio.scattering1d.filter_bank.psi_fr_factory)`.
 
-    psi1_f_fr_down : list[dict]
+    psi1_f_fr_dn : list[dict]
         `psi1_f_fr_up`, but with "down" spin, forming a complementary pair.
 
     average_fr_global_phi : bool
