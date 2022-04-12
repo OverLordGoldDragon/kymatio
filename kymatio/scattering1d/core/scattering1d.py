@@ -81,7 +81,9 @@ def scattering1d(x, pad_fn, unpad, backend, J, log2_T, psi1, psi2, phi,
     # Get S0
     k0 = max(log2_T - oversampling, 0)
 
-    if average:
+    if average_global:
+        S_0 = mean(U_0, axis=-1)
+    elif average:
         S_0_c = cdgmm(U_0_hat, phi[0])
         S_0_hat = subsample_fourier(S_0_c, 2**k0)
         S_0_r = irfft(S_0_hat)
