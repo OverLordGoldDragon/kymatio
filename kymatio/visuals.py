@@ -1471,24 +1471,20 @@ def imshow(x, title=None, show=True, cmap=None, norm=None, abs=0,
     else:
         ax.imshow(x.real, **_kw)
 
-    if w or h:
-        fig.set_size_inches(12 * (w or 1), 12 * (h or 1))
-
-    if not ticks:
-        ax.set_xticks([])
-        ax.set_yticks([])
-    if xticks is not None or yticks is not None:
-        _ticks(xticks, yticks, ax)
-    if not borders:
-        for spine in ax.spines:
-            ax.spines[spine].set_visible(False)
-    if xlabel is not None:
-        ax.set_xlabel(xlabel, weight='bold', fontsize=15)
-    if ylabel is not None:
-        ax.set_ylabel(ylabel, weight='bold', fontsize=15)
+    _handle_ticks(ticks, xticks, yticks, ax)
 
     if title is not None:
         _title(title, ax=ax)
+    if w or h:
+        fig.set_size_inches(12 * (w or 1), 12 * (h or 1))
+
+    _scale_plot(fig, ax, show=False, w=None, h=None, xlabel=xlabel,
+                ylabel=ylabel, auto_xlims=False)
+
+    if not borders:
+        for spine in ax.spines:
+            ax.spines[spine].set_visible(False)
+
     if show:
         plt.show()
 
@@ -1538,13 +1534,7 @@ def plot(x, y=None, title=None, show=0, complex=0, abs=0, w=None, h=None,
     if hlines:
         vhlines(hlines, kind='h', ax=ax)
 
-    ticks = ticks if isinstance(ticks, (list, tuple)) else (ticks, ticks)
-    if not ticks[0]:
-        ax.set_xticks([])
-    if not ticks[1]:
-        ax.set_yticks([])
-    if xticks is not None or yticks is not None:
-        _ticks(xticks, yticks, ax)
+    _handle_ticks(ticks, xticks, yticks, ax)
 
     if title is not None:
         _title(title, ax=ax)
@@ -1654,18 +1644,37 @@ def _ticks(xticks, yticks, ax):
         if not hasattr(yticks, '__len__') and not yticks:
             ax.set_yticks([])
         else:
+            if isinstance(yticks, tuple):
+                yticks, ykw = yticks
+            else:
+                ykw = {}
+
             idxs = np.linspace(0, len(yticks) - 1, 8).astype('int32')
             yt = [fmt(yticks) % h for h in np.asarray(yticks)[idxs]]
             ax.set_yticks(idxs)
-            ax.set_yticklabels(yt)
+            ax.set_yticklabels(yt, **ykw)
     if xticks is not None:
         if not hasattr(xticks, '__len__') and not xticks:
             ax.set_xticks([])
         else:
+            if isinstance(xticks, tuple):
+                xticks, xkw = xticks
+            else:
+                xkw = {}
             idxs = np.linspace(0, len(xticks) - 1, 8).astype('int32')
             xt = [fmt(xticks) % h for h in np.asarray(xticks)[idxs]]
             ax.set_xticks(idxs)
-            ax.set_xticklabels(xt)
+            ax.set_xticklabels(xt, **xkw)
+
+
+def _handle_ticks(ticks, xticks, yticks, ax):
+    ticks = ticks if isinstance(ticks, (list, tuple)) else (ticks, ticks)
+    if not ticks[0]:
+        ax.set_xticks([])
+    if not ticks[1]:
+        ax.set_yticks([])
+    if xticks is not None or yticks is not None:
+        _ticks(xticks, yticks, ax)
 
 
 def _title(title, ax=None):
@@ -1698,9 +1707,17 @@ def _scale_plot(fig, ax, show=False, ax_equal=False, w=None, h=None,
     if w or h:
         fig.set_size_inches(14*(w or 1), 8*(h or 1))
     if xlabel is not None:
-        ax.set_xlabel(xlabel, weight='bold', fontsize=15)
+        if isinstance(xlabel, tuple):
+            xlabel, xkw = xlabel
+        else:
+            xkw = dict(weight='bold', fontsize=15)
+        ax.set_xlabel(xlabel, **xkw)
     if ylabel is not None:
-        ax.set_ylabel(ylabel, weight='bold', fontsize=15)
+        if isinstance(ylabel, tuple):
+            ylabel, ykw = ylabel
+        else:
+            ykw = dict(weight='bold', fontsize=15)
+        ax.set_ylabel(ylabel, **ykw)
     if show:
         plt.show()
 
