@@ -3,7 +3,7 @@ from ..backend.agnostic_backend import unpad_dyadic
 decimate = 1
 
 
-def timefrequency_scattering1d(
+def timefrequency_scattering1d(  # TODO remove pad
         x, pad, unpad, backend, J, log2_T, psi1, psi2, phi, scf,
         pad_fn, pad_left=0, pad_right=0, ind_start=None, ind_end=None,
         oversampling=0, oversampling_fr=0, aligned=True, F_kind='gauss',
@@ -564,7 +564,8 @@ def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
         S_2_fr = U_2_m
 
     # unpad only if input isn't global averaged
-    if not global_averaged_fr and not unpadded_fr:
+    do_unpad_fr = bool(not global_averaged_fr and not unpadded_fr)
+    if do_unpad_fr:
         S_2_fr = unpad(S_2_fr, ind_start_fr, ind_end_fr, axis=-2)
 
     # time lowpassing ########################################################
@@ -613,6 +614,11 @@ def _joint_lowpass(U_2_m, n2, n1_fr, pad_diff, n1_fr_subsample, log2_F_phi_diff,
     unpad_len_fr = S_2.shape[-2]
     assert (unpad_len_fr >= scf.N_frs[n2] / 2**total_conv_stride_over_U1_realized
             ), (unpad_len_fr, scf.N_frs, total_conv_stride_over_U1_realized)
+    # ensure we match specified unpad len (possible to fail by under-padding)
+    if do_unpad_fr:
+        unpad_len_fr_expected = ind_end_fr - ind_start_fr
+        assert unpad_len_fr_expected == unpad_len_fr, (
+            unpad_len_fr_expected, unpad_len_fr)
 
     stride = (total_conv_stride_over_U1_realized, total_conv_stride_tm)
     return S_2, stride

@@ -2148,8 +2148,28 @@ def _echirp_fn(fmin, fmax, tmin=0, tmax=1):
 
 
 def fdts(N, n_partials=2, total_shift=None, f0=None, seg_len=None,
-         partials_f_sep=1.6, global_shift=0, endpoint=False):
+         partials_f_sep=1.6, global_shift=0, brick_spectrum=False,
+         endpoint=False):
     """Generate windowed tones with Frequency-dependent Time Shifts (FDTS)."""
+    def brick(g):
+        gf = np.fft.rfft(g)
+
+        # center at dc
+        ct = np.argmax(np.abs(gf))
+        gf_ct = np.roll(gf, -ct)
+        agf_ct = np.abs(gf_ct)
+        # brickwall width = ~support width
+        # decays slower so pick smaller criterion_amplitude
+        width = np.where(agf_ct < agf_ct.max() / 10000)[0][0]
+        brick_f = np.zeros(len(g)//2 + 1)
+        brick_f[:width] = 1
+        brick_f[-width:] = 1
+        gf_ct *= brick_f
+
+        gf_bricked = np.roll(gf_ct, ct)
+        g_bricked = np.fft.irfft(gf_bricked)
+        return g_bricked
+
     total_shift = total_shift or N//16
     f0 = f0 or N//12
     seg_len = seg_len or N//8
@@ -2165,6 +2185,9 @@ def fdts(N, n_partials=2, total_shift=None, f0=None, seg_len=None,
     for p in range(0, n_partials):
         f_shift = partials_f_sep**p
         x_partial = np.sin(2*np.pi * f0 * f_shift * t) * window
+        if brick_spectrum:
+            x_partial = brick(x_partial)
+
         partial_shift = int(total_shift * np.log2(f_shift) / np.log2(n_partials))
         xs_partial = np.roll(x_partial, partial_shift)
         x += x_partial

@@ -130,8 +130,8 @@ def test_jtfs_vs_ts():
 
       - This measure is flawed and may mislead, but is adequate here; see
         https://github.com/kymatio/kymatio/discussions/730
-      - Better measures are on per-coeff or spatial-localized basis; former is done
-        in `test_freq_tp_invar()`.
+      - Better measures are on per-coeff or spatial-localized basis; former is
+        done in `test_freq_tp_invar()`.
       - In case of global averaging in time, L2 is an excellent measure.
 
     Factors affecting JTFS's sensitivity:
@@ -183,21 +183,39 @@ def test_jtfs_vs_ts():
 
     Other factors exist.
     """
-    N = 4096
+    VARIANTS_ALL = ('perfect', 'ideal', 'practical', 'noisy')
+    variants = VARIANTS_ALL
+    N = 2048
     N_scale = int(np.log2(N))
+
+    # in case forgot to switch back to fast version
+    if N != 2048:
+        warnings.warn("test_jtfs_vs_ts: N != 2048")
+    # in case forgot to switch back to complete version
+    if variants != VARIANTS_ALL:
+        warnings.warn("test_jtfs_vs_ts: variants != VARIANTS_ALL")
+
 
     # "practical" serves to reproduce practical transform imperfections rather
     # than reflect practical signals or transform configurations.
     # in all below examples, 'zero' padding (for both tm & fr) always wins, but
     # we test others just to account for them.
     cfgs = {}
-    cfgs['ts_jtfs_common'] = dict(shape=N, frontend=default_backend,
-                                  max_pad_factor=None)
+    cfgs['ts_jtfs_common'] = dict(shape=N, frontend=default_backend)
     cfgs['ts_common'] = dict(out_type='array', average=True)
     cfgs['jtfs_common'] = dict(sampling_filters_fr=('resample', 'resample'),
                                out_type='dict:array', max_pad_factor_fr=None,
-                               out_3D=True)
+                               out_3D=True, average_fr=True)
     cfgs['fdts'] = {
+        'perfect': dict(
+            f0=N//12,
+            n_partials=2,
+            partials_f_sep=5,
+            total_shift=N//6,
+            seg_len=N//6,
+            global_shift=-N//5,
+            brick_spectrum=True,
+            ),
         'ideal': dict(
             f0=N//12,
             n_partials=2,
@@ -222,19 +240,27 @@ def test_jtfs_vs_ts():
             )
     }
     cfgs['ts'] = {
+        'perfect': dict(
+            T=2**N_scale,
+            J=N_scale - 3,
+            Q=(16, 1),
+            pad_mode='zero',
+            oversampling=99,  # anti alias
+            max_pad_factor=0,
+        ),
         'ideal': dict(
             T=2**N_scale,
             J=N_scale - 3,
             Q=(8, 1),
             pad_mode='zero',
-            out_type='array',
+            max_pad_factor=None,
             ),
         'practical': dict(
             T=2**(N_scale - 1),  # <- greatest influence on ratio
             J=N_scale - 2,
             Q=(12, 1),
             pad_mode='zero',
-            out_type='array',
+            max_pad_factor=None,
             ),
         'noisy': dict(
             T=2**N_scale,
@@ -242,48 +268,58 @@ def test_jtfs_vs_ts():
             Q=(16, 1),
             pad_mode='reflect',
             out_type='array',
+            max_pad_factor=None,
             )
     }
     cfgs['jtfs'] = {
+        'perfect': dict(
+            Q_fr=4,
+            J_fr=4,
+            pad_mode_fr='zero',
+            F=4,
+            ),
         'ideal': dict(
             Q_fr=4,
             J_fr=4,
-            average_fr=True,
             pad_mode_fr='zero',
-            out_3D=True,
-            out_type='dict:array',
             F=4,
-            sampling_filters_fr=('resample', 'resample'),
             ),
         'practical': dict(
             Q_fr=2,
             J_fr=4,
-            average_fr=True,
             pad_mode_fr='conj-reflect-zero',
-            out_3D=True,
-            out_type='dict:array',
-            sampling_filters_fr=('resample', 'resample'),
             ),
         'noisy': dict(
             Q_fr=2,
             J_fr=4,
-            average_fr=True,
             pad_mode_fr='zero',
-            out_3D=True,
-            out_type='dict:array',
-            sampling_filters_fr=('resample', 'resample'),
             )
     }
-    cfgs['th_ts'] = {'ideal': 2e-6,
-                     'practical': 6e-2,
-                     'noisy': 3e-1}
-    cfgs['th_ratio'] = {'ideal': 350000,  # might be driveable to inf, didn't try
-                        'practical': 7,
-                        'noisy': 6}
+    # better results with larger N
+    cfgs['th_ts'] = {
+        2048: {'perfect': 2e-16,
+               'ideal': 8e-6,
+               'practical': 6e-2,
+               'noisy': 8e-2},
+        4096: {'perfect': 2e-16,
+               'ideal': 2e-6,
+               'practical': 5e-2,
+               'noisy': 5e-2}
+        }[N]
+    cfgs['th_ratio'] = {
+        2048: {'perfect': 1e15,
+               'ideal': 6.2e4,
+               'practical': 6.5,
+               'noisy': 3.5},
+        4096: {'perfect': 1e15,
+               'ideal': 3.5e5,
+               'practical': 7,
+               'noisy': 6}
+    }[N]
 
     if metric_verbose:
         print("\nFDTS sensitivity (global L2):")
-    for variant in ('ideal', 'practical', 'noisy'):
+    for variant in variants:
         _test_jtfs_vs_ts(N, cfgs, variant)
 
 
@@ -299,6 +335,9 @@ def _test_jtfs_vs_ts(N, cfgs, variant):
     cfg_jtfs = {k: v for name in ('jtfs', 'jtfs_common', 'ts_jtfs_common',
                                   'ts_for_jtfs')
                 for k, v in C[name].items()}
+    # handle special case
+    if variant == 'perfect':
+        cfg_jtfs['oversampling'] = 0  # no need for this, too slow
 
     # make signal
     x, xs = fdts(N=N, **C['fdts'])
@@ -341,7 +380,8 @@ def _test_jtfs_vs_ts(N, cfgs, variant):
 
     # report
     if metric_verbose:
-        title = {'ideal': 'Ideal',
+        title = {'perfect': 'Perfect',
+                 'ideal': 'Ideal',
                  'practical': 'Practical (non global avg, other)',
                  'noisy': 'Noisy (%.2fdB SNR)' % snr}[variant]
         print(("\n{}:\n"
@@ -695,6 +735,7 @@ def test_lp_sum():
         is_recalibrate = bool(psi_id is not None and psi_id > 0 and
                               sampling_filters_fr == 'recalibrate')
 
+        # get `psis`
         if psi_id is not None:
             psi_is_cqt = psi_fs['is_cqt'][psi_id]
             psis = [p for n1_fr, p in enumerate(psi_fs[psi_id])
@@ -705,7 +746,8 @@ def test_lp_sum():
             psis = [p[k] for n1_fr, p in enumerate(psi_fs)
                     if k in p and cond(psi_is_cqt, n1_fr)]
 
-        # include one CQT so there isn't a blindspot between CQT & non-CQT
+        # in non-CQT, include one CQT so there isn't a blindspot
+        # between CQT & non-CQT
         if not is_cqt and not is_recalibrate and len(psis) != 0:
             last_cqt_idx = -(len(psis) + 1)
             if psi_id is not None:
@@ -720,6 +762,7 @@ def test_lp_sum():
             if last_cqt is not None:
                 psis.insert(0, last_cqt)
 
+        # get peak indices
         if len(psis) == 0:
             # all CQT or non-CQT, pass
             cqt_but_no_k = bool(is_cqt and
@@ -735,14 +778,18 @@ def test_lp_sum():
             first_peak, last_peak = min(pk0, pk1), max(pk0, pk1)
 
             if not is_cqt:
-                # include bin 1
+                # include bin 3 (bins 1 & 2 checked separately)
                 if first_peak < len(lp) // 2:  # analytic
-                    first_peak = 1
+                    first_peak = 3
+                    if first_peak >= last_peak:
+                        last_peak = first_peak + 1
                 else:
-                    last_peak = len(lp) - 1
+                    last_peak = len(lp) - 3
+                    if last_peak <= first_peak:
+                        first_peak = last_peak - 1
 
         # handle edge case
-        if first_peak is not None and first_peak == last_peak:
+        if first_peak is not None and first_peak >= last_peak:
             # fr we already skip if poorly padded
             # len(psis) == 1 should only occur in tm if poorly padded
             warned_pad_or_is_not_time = bool(k is None or
@@ -750,10 +797,10 @@ def test_lp_sum():
             # account for separately since warning isn't thrown for >=2 wavelets
             if not (len(psis) == 1 or warned_pad_or_is_not_time):
                 maybe_viz_err(lp, psis)
-                raise AssertionError(
+                raise AssertionError((
                     "{} <= {}\n{}\nis_cqt={}\npsi_id={}\nk={}\n"
                     ).format(last_peak, first_peak, test_params_str, is_cqt,
-                             psi_id, k)
+                             psi_id, k))
 
         n_psis = len(psis)
         return first_peak, last_peak, psis, n_psis
@@ -837,16 +884,29 @@ def test_lp_sum():
                                               sampling_filters_fr, max_pad,
                                               is_cqt, n_psis)
 
-        # lp min must be checked between peaks since it drops to 0 elsewhere
-        lp_min = lp[first_peak:last_peak + 1].min()
+        def _assert(first_peak, last_peak, peak_target, th):
+            lp_min = lp[first_peak:last_peak + 1].min()
+            if not peak_target - lp_min < th:
+                maybe_viz_err(lp, psis, peak_target)
+                raise AssertionError(
+                    ("{} - {} >= {} | between peaks {} and {}\n{}\n{}"
+                     "\nis_cqt={}\npsi_id={}").format(
+                         peak_target, lp_min, th, first_peak, last_peak, s,
+                         test_params_str, is_cqt, psi_id))
 
-        if not peak_target - lp_min < th:
-            maybe_viz_err(lp, psis, peak_target)
-            raise AssertionError(
-                ("{} - {} >= {} | between peaks {} and {}\n{}\n{}"
-                 "\nis_cqt={}\npsi_id={}").format(
-                     peak_target, lp_min, th, first_peak, last_peak, s,
-                     test_params_str, is_cqt, psi_id))
+        # lp min must be checked between peaks since it drops to 0 elsewhere
+        _assert(first_peak, last_peak, peak_target, th)
+
+        # special base, bins 1 & 2
+        if not is_cqt or (first_peak in (2, 3) or
+                          last_peak in (len(lp) - 1, len(lp) - 2)):
+            if first_peak < len(lp) // 2:  # analytic case
+                first_peak = 1
+            else:
+                first_peak = len(lp) - 3
+            last_peak = first_peak + 2
+            _assert(first_peak, last_peak, peak_target,
+                    th_below_bin_1 * peak_target)
 
     def get_test_params_str(test_params):
         return '\n'.join(f'{k}={v}' for k, v in test_params.items())
@@ -862,6 +922,7 @@ def test_lp_sum():
     th_below_non_cqt = .7
     th_below_one_psi = .5
     th_below_nonmax_pad = .5
+    th_below_bin_1 = .98
     # assume subsampling works as intended past this;
     # hard to account for all edge cases with incomplete filterbanks
     max_k = 5
@@ -920,7 +981,7 @@ def test_lp_sum():
                           # psi & phi
                           lp = np.sum([np.abs(p[k])**2 for p in psi_fs if k in p],
                                       axis=0)
-                          lp += np.abs(jtfs.phi_f[0][k])**2
+                          # lp += np.abs(jtfs.phi_f[0][k])**2
 
                           kw = dict(psi_fs=psi_fs, k=k, max_pad=max_pad['tm'])
                           check_above(lp, test_params_str, warned_pad, **kw)
@@ -947,10 +1008,10 @@ def test_lp_sum():
                               lp += np.abs(p)**2
 
                           # phi
-                          scale_diff = list(jtfs.psi_ids.values()).index(psi_id)
-                          pad_diff = (jtfs.J_pad_frs_max_init -
-                                      jtfs.J_pad_frs[scale_diff])
-                          lp += np.abs(jtfs.phi_f_fr[0][0][pad_diff])**2
+                          # scale_diff = list(jtfs.psi_ids.values()).index(psi_id)
+                          # pad_diff = (jtfs.J_pad_frs_max_init -
+                          #             jtfs.J_pad_frs[scale_diff])
+                          # lp += np.abs(jtfs.phi_f_fr[0][0][pad_diff])**2
 
                           ckw = dict(psi_fs=psi_fs, psi_id=psi_id,
                                      sampling_filters_fr=sampling_filters_fr,

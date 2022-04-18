@@ -891,7 +891,8 @@ def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T):
     See `help(kymatio.scattering1d.filter_bank.energy_norm_filterbank)`.
     """
     # in case of `trim_tm` for JTFS
-    phi = phi_f[0][0] if isinstance(phi_f[0], list) else phi_f[0]
+    # phi = phi_f[0][0] if isinstance(phi_f[0], list) else phi_f[0]  # TODO
+    phi = None
     kw = dict(phi_f=phi, log2_T=log2_T, passes=3)
     psi1_f0 = [p[0] for p in psi1_f]
     psi2_f0 = [p[0] for p in psi2_f]
@@ -1271,7 +1272,7 @@ def compute_temporal_width(p_f, N=None, pts_per_scale=6, fast=True,
         complete_decay_factor = 16
         fast_approx_amp_ratio = 0.8208687174155399
     else:
-        if fast:
+        if fast:  # TODO unnecessary?
             raise ValueError("`fast` requires using default values of "
                              "`sigma0` and `criterion_amplitude`.")
         T = Np
