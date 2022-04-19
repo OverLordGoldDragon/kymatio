@@ -1980,7 +1980,8 @@ def test_meta():
     # reproduce this case separately; above doesn't test where 'exclude' fails
     N = 1024
     x = np.random.randn(N)
-    J = int(np.log2(N) - 1)
+    _J = int(np.log2(N) - 1)
+    J = (_J, _J + 1)
     J_fr = 3
     params = dict(shape=N, J=J, Q=Q, J_fr=J_fr, Q_fr=Q_fr, F=F, out_type=out_type)
 

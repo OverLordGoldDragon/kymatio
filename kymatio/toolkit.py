@@ -2404,6 +2404,21 @@ class IterWithDelay():
         return out
 
 
+def fill_default_args(cfg, defaults, copy_original=True):
+    if cfg is None:
+        return defaults
+    elif copy_original:
+        cfg = deepcopy(cfg)  # don't affect external
+
+    for k, v in defaults.items():
+        if k not in cfg:
+            cfg[k] = v
+        else:
+            if isinstance(v, dict):
+                cfg[k] = fill_default_args(cfg[k], v)
+    return cfg
+
+
 # backend ####################################################################
 class ExtendedUnifiedBackend():
     """Extends existing Kymatio backend with functionality."""

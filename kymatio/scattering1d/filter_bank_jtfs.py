@@ -60,11 +60,8 @@ class _FrequencyScatteringBase(ScatteringBase):
         self.adjust_padding_and_filters()
 
         # TODO doc: F_kind = 'fir' still computes with 'gauss' for `phi_f` pairs
-        # TODO: recompute padding
         # TODO: "instantaneous geometry" presrved? need p h a s e
         # TODO better jtfs_exmin
-        # TODO out_3D pad `min`
-        # TODO lp sum independent of phi
 
     def build(self):
         self.sigma0 = 0.1
@@ -243,7 +240,7 @@ class _FrequencyScatteringBase(ScatteringBase):
             self.psi_fr_params, self.N_fr_scales_unique, self.N_fr_scales_max,
             self.N_fr_scales_min, self.J_pad_frs, **self.get_params(
                 'unrestricted_pad_fr', 'sampling_psi_fr', 'pad_mode_fr',
-                'scale_diff_max_to_set_pad_min_due_to_psi',  # TODO rename
+                'scale_diff_max_to_build',
                 'r_psi_fr', 'normalize_fr',
                 'criterion_amplitude', 'sigma0', 'alpha', 'P_max', 'eps'))
 
@@ -409,7 +406,7 @@ class _FrequencyScatteringBase(ScatteringBase):
         self.psi_fr_params = params
 
         if self.sampling_psi_fr != 'recalibrate':
-            self.scale_diff_max_recalibrate = None  # TODO private, and in args?
+            self.scale_diff_max_recalibrate = None
 
         # remove unused
         self.psi1_f_fr_dn_init = {}
@@ -454,7 +451,7 @@ class _FrequencyScatteringBase(ScatteringBase):
               global averaging.
 
         [1] and [4] directly set `J_pad_frs_min_limit_due_to_psi`.
-        [2] and [3] set `scale_diff_max_to_set_pad_min_due_to_psi`, which in turn
+        [2] and [3] set `scale_diff_max_to_build`, which in turn
         sets `J_pad_frs_min_limit_due_to_psi` in `compute_padding_fr()`.
         """
         params = self.psi_fr_params
@@ -554,15 +551,15 @@ class _FrequencyScatteringBase(ScatteringBase):
         if pad_diff_max is not None:
             self.J_pad_frs_min_limit_due_to_psi = (self.J_pad_frs_max_init -
                                                    pad_diff_max)
-            self.scale_diff_max_to_set_pad_min_due_to_psi = None  # TODO rename
+            self.scale_diff_max_to_build = None
         elif scale_diff_max_to_set_pad_min is not None:
             self.J_pad_frs_min_limit_due_to_psi = None  # None for now
-            self.scale_diff_max_to_set_pad_min_due_to_psi = (
+            self.scale_diff_max_to_build = (
                 scale_diff_max_to_set_pad_min)
         else:
             # no limits (i.e. naturally computed J_pad_frs_min is correct)
             self.J_pad_frs_min_limit_due_to_psi = None
-            self.scale_diff_max_to_set_pad_min_due_to_psi = None
+            self.scale_diff_max_to_build = None
 
     def compute_stride_fr(self):
         self._compute_psi_fr_params()
@@ -634,7 +631,7 @@ class _FrequencyScatteringBase(ScatteringBase):
             # this `scale_diff_ref` will do
             scale_diff_ref = max(self.psi_fr_params)
             # clarity assertion
-            assert scale_diff_ref == self.scale_diff_max_to_set_pad_min_due_to_psi
+            assert scale_diff_ref == self.scale_diff_max_to_build
         else:
             scale_diff_ref = scale_diff
         j1_frs_scale = self.psi_fr_params[scale_diff_ref]['j']
@@ -754,6 +751,9 @@ class _FrequencyScatteringBase(ScatteringBase):
                                               total_conv_stride_over_U1, 0)
                     log2_F_phi = self.log2_F - log2_F_phi_diff
 
+                    # Maximum permitted subsampling before conv w/ `phi_f_fr`.
+                    # This avoids distorting `phi` (aliasing), or for
+                    # 'recalibrate', requesting one that doesn't exist.
                     max_subsample_before_phi_fr = log2_F_phi
                     sub_adj = min(j1_fr, total_conv_stride_over_U1,
                                   max_subsample_before_phi_fr)
@@ -872,13 +872,13 @@ class _FrequencyScatteringBase(ScatteringBase):
         for N_fr_scale in self.N_fr_scales_unique[::-1]:
             # check for reuse
             scale_diff = self.N_fr_scales_max - N_fr_scale
-            if (self.scale_diff_max_to_set_pad_min_due_to_psi is not None and
+            if (self.scale_diff_max_to_build is not None and
                       scale_diff >
-                      self.scale_diff_max_to_set_pad_min_due_to_psi):
-                # account for `scale_diff_max_to_set_pad_min_due_to_psi`
+                      self.scale_diff_max_to_build):
+                # account for `scale_diff_max_to_build`
                 # reuse max `scale_diff`'s
                 self.J_pad_frs[scale_diff] = self.J_pad_frs[
-                    self.scale_diff_max_to_set_pad_min_due_to_psi]
+                    self.scale_diff_max_to_build]
                 if self.J_pad_frs_min_limit_due_to_psi is None:
                     self.J_pad_frs_min_limit_due_to_psi = self.J_pad_frs[
                         scale_diff]
@@ -957,11 +957,11 @@ class _FrequencyScatteringBase(ScatteringBase):
             else:
                 _pad_left, _pad_right = -1, -1
 
-            self.pad_left_fr.append(_pad_left)  # TODO unused?
+            self.pad_left_fr.append(_pad_left)
             self.pad_right_fr.append(_pad_right)
 
-        # compute `scale_diff_max_to_set_pad_min_due_to_psi`  # TODO rename
-        if self.scale_diff_max_to_set_pad_min_due_to_psi is None:
+        # compute `scale_diff_max_to_build`
+        if self.scale_diff_max_to_build is None:
             # clarity assertion
             assert (self.sampling_psi_fr == 'resample' or
 
@@ -981,13 +981,13 @@ class _FrequencyScatteringBase(ScatteringBase):
                 J_pad_frs_min = min(self.J_pad_frs.values())
                 for scale_diff, J_pad_fr in self.J_pad_frs.items():
                     if J_pad_fr == J_pad_frs_min:
-                        self.scale_diff_max_to_set_pad_min_due_to_psi = scale_diff
+                        self.scale_diff_max_to_build = scale_diff
                         break
 
                 # clear `psi_fr_params` of scales we won't build
                 scale_diffs = list(self.psi_fr_params)
                 for scale_diff in scale_diffs:
-                    if scale_diff > self.scale_diff_max_to_set_pad_min_due_to_psi:
+                    if scale_diff > self.scale_diff_max_to_build:
                         del self.psi_fr_params[scale_diff]
 
     def _compute_unpadding_params(self, N_fr):
@@ -1059,7 +1059,7 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
                    N_fr_scales_max, N_fr_scales_min, J_pad_frs,
                    unrestricted_pad_fr, sampling_psi_fr='resample',
                    pad_mode_fr='conj-reflect-zero',
-                   scale_diff_max_to_set_pad_min_due_to_psi=None,
+                   scale_diff_max_to_build=None,
                    r_psi_fr=math.sqrt(0.5), normalize_fr='l1',
                    criterion_amplitude=1e-3, sigma0=0.1,
                    alpha=4., P_max=5, eps=1e-7):
@@ -1232,11 +1232,11 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
             # varied `padded_len` as func of `J_pad_frs` & `scale_diff` (hence
             # reuse not sufficing) is ruled out by later assertion, `pads_built`.
             # Frontend also assures this in `compute_padding_fr`, and/or via
-            # `scale_diff_max_to_set_pad_min_due_to_psi`
+            # `scale_diff_max_to_build`
             repeat_last_built_id(scale_diff, scale_diff_last_built)
             continue
-        elif (scale_diff_max_to_set_pad_min_due_to_psi is not None and
-                scale_diff > scale_diff_max_to_set_pad_min_due_to_psi):
+        elif (scale_diff_max_to_build is not None and
+                scale_diff > scale_diff_max_to_build):
             assert scale_diff not in j1_frs, j1_frs
             # ensure `scale_diff` didn't exceed a global maximum.
             # subsequent `scale_diff` are only greater, so
@@ -1300,8 +1300,8 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
         psi_id = psi_ids[scale_diff]
         psi1_f_fr_dn[psi_id] = psis_dn
 
-        # compute spin up by conjugating spin down in frequency domain
-        psi1_f_fr_up[psi_id] = [conj_fr(p) for p in psis_dn]
+        # compute spin up by time-reversing spin down in frequency domain
+        psi1_f_fr_up[psi_id] = [time_reverse_fr(p) for p in psis_dn]
 
     ##########################################################################
 
@@ -1309,9 +1309,9 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
     n_scales = len(N_fr_scales_unique)
     assert len(psi_ids) == n_scales, (psi_ids, N_fr_scales_unique)
 
-    # validate `scale_diff_max_to_set_pad_min_due_to_psi`
-    if scale_diff_max_to_set_pad_min_due_to_psi is not None:
-        assert scale_diff_last_built <= scale_diff_max_to_set_pad_min_due_to_psi
+    # validate `scale_diff_max_to_build`
+    if scale_diff_max_to_build is not None:
+        assert scale_diff_last_built <= scale_diff_max_to_build
 
     # guaranteed by "J_pad_frs is non-increasing", which was already asserted
     # in `compute_padding_fr()` (base_frontend), but include here for clarity;
@@ -1669,10 +1669,10 @@ def _recalibrate_psi_fr(max_original_width, xi1_frs, sigma1_frs, j1_frs,
             scale_diff_max)
 
 #### helpers #################################################################
-def conj_fr(x):
-    """Conjugate in frequency domain by swapping all bins (except dc);
-    assumes frequency along first axis.
-    """  # TODO `np.conj(out)`
+def time_reverse_fr(x):
+    """Time-reverse in frequency domain by swapping all bins (except dc);
+    assumes frequency is along first axis. x(-t) <=> X(-w).
+    """
     out = np.zeros_like(x)
     out[0] = x[0]
     out[1:] = x[:0:-1]

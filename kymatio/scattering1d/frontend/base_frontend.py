@@ -85,9 +85,7 @@ class ScatteringBase1D(ScatteringBase):
             raise ValueError("unsupported `normalize`; must be one of: "
                              + ", ".join(supported))
 
-        # ensure J2 <= J1
-        # assert self.J[1] <= self.J[0], self.J  # TODO
-        # ensure 2**J <= nextpow2(N)
+        # ensure 2**max(J) <= nextpow2(N)
         Np2up = 2**self.N_scale
         if 2**max(self.J) > Np2up:
             raise ValueError(("2**J cannot exceed input length (rounded up to "
@@ -1379,30 +1377,24 @@ class TimeFrequencyScatteringBase1D():
         `J_pad_frs_max_init`, indexed by `n2`.
         See `help(scf.compute_padding_fr())`.
 
-    max_subsample_equiv_before_phi_fr : int
-        Maximum permitted `subsample_equiv_due_to_pad` before convolving
-        with `phi_f_fr`, equal to `_n_phi_f_fr - 1` (unless `average_global_fr`,
-        then unrestricted).
+    scale_diff_max_to_build: int / None
+        Largest `scale_diff` (smallest `N_fr_scale`) for which a filterbank will
+        be built; lesser `N_fr_scales` will reuse it. Used alongside other
+        attributes to control said building, also as an additional sanity and
+        clarity layer.
+        Prevents severe filterbank distortions due to  insufficient padding.
 
-        This avoids distorting `phi`; temporal width is preserved with 'resample',
-        so downsampling may yield a `phi` that never properly decays and wraps
-        on itself.
-          - Subsampling by `log2_F` *after* convolving with `phi_f_fr` is fine,
-            thus the restriction is to not subsample by more than the most
-            subsampled `phi_f_fr` *before* convolving with it.
+        Affected by `sampling_psi_fr`, padding, and filterbank param choices.
+        See docs for `_compute_J_pad_frs_min_limit_due_to_psi`,
+        in `filter_bank_jtfs.py`.
 
-    max_subsample_before_phi_fr : list[int]
-        Maximum permitted `n1_fr_subsample`. May differ from `log2_F`
-        if `sampling_phi_fr == 'recalibrate'`, in which case it accounts for
-        (and varies with) `subsample_equiv_due_to_pad` (which the filter treats
-        same as `n1_fr_subsample`; see "Returns" in
-        `help(kymatio.scattering1d.filter_bank.phi_fr_factory)`).
+    J_pad_frs_min_limit_due_to_psi: int / None
+        Controls minimal padding.
+        Prevents severe filterbank distortions due to insufficient padding.
+        See docs for `_compute_J_pad_frs_min_limit_due_to_psi`,
+        in `filter_bank_jtfs.py`.
 
-        Difference with `max_subsample_equiv_before_phi_fr` is, this restricts
-        `n1_fr_subsample` - the other restricts `subsample_equiv_due_to_pad`
-        (i.e. sets `J_pad_frs_min_limit`).
-
-    max_subsample_equiv_before_psi_fr : int / None
+    max_subsample_equiv_before_psi_fr : int / None  # TODO
         Maximum permitted `subsample_equiv_due_to_pad` (equivalently, minimum
         permitted `J_pad_fr` as difference with `J_pad_frs_max_init`), i.e.
         shortest input psi can accept.
@@ -1431,7 +1423,8 @@ class TimeFrequencyScatteringBase1D():
 
     pad_left_fr : int
         Amount of padding to left  of frequential columns
-        (or top of joint matrix).
+        (or top of joint matrix). Unused in implementation; can be used
+        by user if `pad_mode` is a function.
 
     pad_right_fr : int
         Amount of padding to right of frequential columns

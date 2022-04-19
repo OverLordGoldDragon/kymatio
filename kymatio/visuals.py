@@ -2,16 +2,15 @@
 """Convenience visual methods."""
 import os
 import numpy as np
+import warnings
 from scipy.fft import ifft, ifftshift
 from copy import deepcopy
-from .scattering1d.filter_bank import compute_temporal_support
 from .toolkit import (coeff_energy, coeff_distance, energy, drop_batch_dim_jtfs,
-                      _eps)
+                      _eps, fill_default_args, pack_coeffs_jtfs)
 
 try:
     import matplotlib.pyplot as plt
 except ImportError:
-    import warnings
     warnings.warn("`kymatio.visuals` requires `matplotlib` installed.")
 
 
@@ -447,215 +446,6 @@ def filterbank_jtfs_1d(jtfs, zoom=0, psi_id=0, filterbank=True, lp_sum=False,
     _plot_filters(pdn, p0, lp, fig0, ax0, fig1, ax1, title_base=title_base,
                   up=False)
     plt.show()
-
-
-def filterbank_jtfs_2d(jtfs, part='real', zoomed=False, w=1, h=1, borders=False,
-                       labels=True, suptitle_y=1.015):
-    """Visualize JTFS joint 2D filterbank in time domain.
-
-    Parameters
-    ----------
-    jtfs : kymatio.scattering1d.TimeFrequencyScattering1D
-        Scattering object.
-
-    part : str['real', 'imag', 'complex']
-        Whether to plot real or imaginary part (black-white-red colormap),
-        or complex (special coloring).
-
-    zoomed : bool (default False)
-        Whether to plot all filters with maximum subsampling
-        (loses relative orientations but shows fine detail).
-
-    w, h : float, float
-        Adjust width and height.
-
-    borders : bool (default False)
-        Whether to show plot borders between wavelets.
-
-    labels : bool (default True)
-        Whether to label joint slices with `mu, l, spin` information.
-
-    suptitle_y : float / None
-        Position of plot title (None for no title).
-        Default is optimized for `w=h=1`.
-
-    Example
-    -------
-    ::
-
-        N, J, Q, J_fr, Q_fr = 512, 5, 16, 3, 1
-        jtfs = TimeFrequencyScattering1D(J, N, Q, J_fr=J_fr, Q_fr=Q_fr)
-        filterbank_jtfs_2d(jtfs)
-    """
-    def to_time(p):
-        # center & ifft
-        return ifft(p * (-1)**np.arange(len(p)))
-
-    def get_imshow_data(jtfs, t_idx, f_idx, s_idx=None, max_t_bound=None,
-                        max_f_bound=None):
-        # iterate freq wavelets backwards to arrange low-high freq <-> left-right
-        _f_idx = len(jtfs.psi1_f_fr_up) - f_idx - 1
-        # if lowpass, get lowpass data #######################################
-        if t_idx == -1 and f_idx == -1:
-            p_t, p_f = jtfs.phi_f[0], jtfs.scf.phi_f_fr[0]
-            psi_txt = r"$\Psi_{%s, %s, %s}$" % ("-\infty", "-\infty", 0)
-        elif t_idx == -1:
-            p_t, p_f = jtfs.phi_f[0], jtfs.scf.psi1_f_fr_up[_f_idx]
-            psi_txt = r"$\Psi_{%s, %s, %s}$" % ("-\infty", _f_idx, 0)
-        elif f_idx == -1:
-            p_t, p_f = jtfs.psi2_f[t_idx], jtfs.scf.phi_f_fr[0]
-            psi_txt = r"$\Psi_{%s, %s, %s}$" % (t_idx, "-\infty", 0)
-
-        if t_idx == -1 or f_idx == -1:
-            title = (psi_txt, dict(fontsize=17, y=.75))
-            p_t, p_f = p_t[0].squeeze(), p_f[0].squeeze()
-            Psi = to_time(p_f)[:, None] * to_time(p_t)[None]
-            if max_t_bound is not None or zoomed:
-                Psi = process_Psi(Psi, max_t_bound, max_f_bound)
-            return Psi, title
-
-        # else get spinned wavelets ##########################################
-        psi_spin = (jtfs.scf.psi1_f_fr_up if s_idx == 0 else
-                    jtfs.scf.psi1_f_fr_dn)
-        psi_f = psi_spin[_f_idx][0].squeeze()
-        psi_t = jtfs.psi2_f[t_idx][0].squeeze()
-
-        f_width = compute_temporal_support(psi_f[None])
-        t_width = compute_temporal_support(psi_t[None])
-        f_bound = int(2**np.floor(np.log2(f_width)))
-        t_bound = int(2**np.floor(np.log2(t_width)))
-
-        # to time
-        psi_f = to_time(psi_f)
-        psi_t = to_time(psi_t)
-
-        # compute joint wavelet in time
-        Psi = psi_f[:, None] * psi_t[None]
-        # title
-        spin = '+1' if s_idx == 0 else '-1'
-        psi_txt = r"$\Psi_{%s, %s, %s}$" % (t_idx, _f_idx, spin)
-        title = (psi_txt, dict(fontsize=17, y=.75))
-        # meta
-        m = dict(t_bound=t_bound, f_bound=f_bound)
-        return Psi, title, m
-
-    def process_Psi(Psi, max_t_bound, max_f_bound, m=None):
-        M, N = Psi.shape
-        if zoomed and m is not None:
-            f_bound, t_bound = m['f_bound'], m['t_bound']
-        else:
-            f_bound, t_bound = max_f_bound, max_t_bound
-
-        # ensure doesn't exceed own or max bounds
-        Psi = Psi[max(0, M//2 - f_bound):min(M, M//2 + f_bound),
-                  max(0, N//2 - t_bound):min(N, N//2 + t_bound)]
-        if zoomed:
-            return Psi
-
-        # pad to common size if too short
-        f_diff = 2*f_bound - Psi.shape[0]
-        t_diff = 2*t_bound - Psi.shape[1]
-        Psi = np.pad(Psi, [[int(np.ceil(f_diff/2)), f_diff//2],
-                           [int(np.ceil(t_diff/2)), t_diff//2]])
-        return Psi
-
-    def _show(Psi, title, ax):
-        if part == 'real':
-            Psi = Psi.real
-        elif part == 'imag':
-            Psi = Psi.imag
-        else:
-            Psi = _colorize_complex(Psi)
-        # handle float noise case
-        if np.abs(Psi).max() < 1e-12:
-            Psi *= 0
-            kw = dict(norm=(-.1, .1))  # show white
-        else:
-            kw = {}
-        cmap = 'bwr' if part in ('real', 'imag') else 'none'
-        if not labels:
-            title = None
-        imshow(Psi, title=title, show=0, ax=ax, ticks=0, borders=borders,
-               cmap=cmap, **kw)
-
-    # get spinned wavelet arrays & metadata ##################################
-    n_rows, n_cols = len(jtfs.psi2_f), len(jtfs.scf.psi1_f_fr_up)
-    imshow_data = {}
-    for s_idx in (0, 1):
-        for t_idx in range(n_rows):
-            for f_idx in range(n_cols):
-                imshow_data[(s_idx, t_idx, f_idx)
-                            ] = get_imshow_data(jtfs, t_idx, f_idx, s_idx)
-
-    max_t_bound = max(data[2]['t_bound'] for data in imshow_data.values())
-    max_f_bound = max(data[2]['f_bound'] for data in imshow_data.values())
-    bounds = (max_t_bound, max_f_bound)
-
-    # plot ###################################################################
-    n_rows_actual = n_rows * 2 + 1
-    n_cols_actual = n_cols + 1
-    figsize = (1.6 * n_cols_actual * w, 1.6 * n_rows_actual * h)
-    fig, axes = plt.subplots(n_rows_actual, n_cols_actual, figsize=figsize)
-
-    _txt = "(%s%s" % (part, " part" if part in ('real', 'imag') else "")
-    _txt += ", zoomed)" if zoomed else ")"
-    if suptitle_y is not None:
-        plt.suptitle("Joint wavelet filterbank " + _txt,
-                     y=suptitle_y, weight='bold', fontsize=17)
-
-    # (psi_t * psi_f) and (phi_t * psi_f)
-    for s_idx in (0, 1):
-        # (phi_t * psi_f)
-        if s_idx == 1 and t_idx == n_rows - 1 and f_idx == n_cols - 1:
-            for f_idx in range(n_cols):
-                Psi, title  = get_imshow_data(jtfs, -1, f_idx, 0, *bounds)
-                if zoomed:
-                    Psi = process_Psi(Psi, None, None,
-                                      imshow_data[(0, 0, f_idx)][2])
-                row_idx = n_rows
-                ax = axes[row_idx][f_idx + 1]
-                _show(Psi, title=title, ax=ax)
-
-        # (psi_t * psi_f)
-        for t_idx in range(n_rows):
-            for f_idx in range(n_cols):
-                psi_t_idx = t_idx if s_idx == 0 else (n_rows - 1 - t_idx)
-                Psi, title, m = imshow_data[(s_idx, psi_t_idx, f_idx)]
-                Psi = process_Psi(Psi, max_t_bound, max_f_bound, m)
-
-                row_idx = t_idx + (n_rows + 1) * s_idx
-                ax = axes[row_idx][f_idx + 1]
-                _show(Psi, title=title, ax=ax)
-
-    # (psi_t * phi_f)
-    for t_idx in range(n_rows):
-        Psi, title = get_imshow_data(jtfs, t_idx, -1, 0, *bounds)
-        if zoomed:
-            Psi = process_Psi(Psi, None, None,
-                              imshow_data[(0, t_idx, 0)][2])
-        ax = axes[t_idx][0]
-        _show(Psi, title=title, ax=ax)
-
-    # (phi_t * phi_f)
-    Psi, title = get_imshow_data(jtfs, -1, -1, 0, *bounds)
-    if zoomed:
-        Psi = process_Psi(Psi, None, None,
-                          imshow_data[(0, 0, 0)][2])
-    ax = axes[n_rows][0]
-    _show(Psi, title=title, ax=ax)
-
-    # strip borders of remainders
-    for t_idx in range(n_rows + 1, 2*n_rows + 1):
-        ax = axes[t_idx][0]
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines:
-            ax.spines[spine].set_visible(False)
-
-    # tight
-    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, wspace=0, hspace=0)
-
-    return fig, axes
 
 
 def gif_jtfs_2d(Scx, meta, savedir='', base_name='jtfs2d', images_ext='.png',
@@ -1340,6 +1130,660 @@ def compare_distances_jtfs(pair_distances, pair_distances_ref, plots=True,
     return ratios, stats
 
 
+def scalogram(x, sc, fs=None, show_x=False, plot_cfg=None):
+    """Compute and plot scalogram. Optionally plots `x`, separately.
+
+    Parameters
+    ----------
+
+    x : np.ndarray
+        Input, 1D.
+
+    sc : `Scattering1D` instance
+        Must be from NumPy backend, and have `average=False`. Will internally
+        set `sc.oversampling=999` and `sc.max_order=1`.
+
+    fs : None / int
+        Sampling rate. If provided, will display physical units (Hz), else
+        discrete (cycles/sample).
+
+    show_x : bool (default False)
+        Whether to plot `x` in time domain.
+
+    x_title : str
+        Title to show for plot of `x`, if applicable.
+
+    scalogram_title : str
+        Title to show for plot of scalogram.
+
+    plot_cfg : None / dict
+        Configures plotting. Will fill for missing values from defaults
+        (see `plot_cfg_defaults` in source code). Supported key-values:
+
+            'label_kw_xy' : dict
+                Passed to all `ax.set_xlabel` and `ax.set_ylabel`.
+
+            'title_kw' : dict
+                Passed to all `ax.set_title.
+
+            'tick_params_kw' : dict
+                Passed to all `ax.tick_params`.
+
+            'title_x' : str
+                Title to show for plot of `x`, if applicable.
+
+            'title_scalogram' : str
+                Title to show for plot of scalogram.
+    """
+    # sanity checks
+    assert isinstance(x, np.ndarray), type(x)
+    assert x.ndim == 1, x.shape
+    assert not sc.average
+    assert sc.__module__ == 'kymatio.numpy', sc.__module__
+
+    # `plot_cfg`, defaults
+    plot_cfg_defaults = {
+      'label_kw_xy': dict(weight='bold', fontsize=18),
+      'title_kw':    dict(weight='bold', fontsize=20),
+      'tick_params_kw': dict(labelsize=16),
+      'title_x': 'x',
+      'title_scalogram': 'Scalogram',
+    }
+    C = fill_default_args(plot_cfg, plot_cfg_defaults, copy_original=True)
+
+    # extract basic params, configure `sc`
+    N = len(x)
+    sc.oversampling = 999
+    sc.max_order = 1
+
+    # compute scalogram
+    Scx = sc(x)
+    meta = sc.meta()
+    S1 = np.array([c['coef'].squeeze() for c in Scx])[meta['order'] == 1]
+
+    # ticks & units
+    if fs is not None:
+        f_units = "[Hz]"
+        t_units = "[sec]"
+    else:
+        f_units = "[cycles/sample]"
+        t_units = "[samples]"
+
+    yticks = np.array([p['xi'] for p in sc.psi1_f])
+    if fs is not None:
+        t = np.linspace(0, N/fs, N, endpoint=False)
+        yticks *= fs
+    else:
+        t = np.arange(N)
+
+    # axis labels
+    xlabel  = (f"Time {t_units}",      C['label_kw_xy'])
+    ylabel0 = ("Amplitude",            C['label_kw_xy'])
+    ylabel1 = (f"Frequency {f_units}", C['label_kw_xy'])
+    # titles
+    title0 = (C['title_x'],         C['title_kw'])
+    title1 = (C['title_scalogram'], C['title_kw'])
+    # format yticks (limit # of shown decimal digits, and round the rest)
+    yticks = _format_ticks(yticks)
+
+    # plot ###################################################################
+    fig, ax = plt.gcf(), plt.gca()
+    plot(t, x, xlabel=xlabel, ylabel=ylabel0, fig=fig, ax=ax,
+         title=title0, show=0)
+    ax.tick_params(**C['tick_params_kw'])
+    plt.show()
+
+    fig, ax = plt.gcf(), plt.gca()
+    imshow(S1, abs=1, xlabel=xlabel, ylabel=ylabel1, title=title1,
+           yticks=yticks, xticks=t, show=0, fig=fig, ax=ax)
+    ax.tick_params(**C['tick_params_kw'])
+    plt.show()
+
+
+def viz_jtfs_2d(jtfs, Scx=None, viz_filterbank=True, viz_coeffs=None,
+                viz_spins=(True, True), axis_labels=True, fs=None,
+                psi_id=0, w=1., h=1., show=True, savename='jtfs_viz_2d',
+                plot_cfg=None):
+    """Visualize JTFS filterbank and/or coefficients in their true 4D structure,
+    via 2D time-frequency slices laid out in a 2D time-(log-quefrency) grid.
+
+    Parameters
+    ----------
+
+    jtfs : TimeFrequencyScattering1D
+        JTFS instance.
+
+    Scx : None / dict / np.ndarray
+        Coefficients to visualize. Requires:
+
+            - `jtfs.out_type` to be`'dict:list'` or `'dict:array'`. Or,
+            - `Scx` to be a 4D numpy array packed with `pack_coeffs_jtfs` and
+              `structure=2` (which is what it will otherwise do internally).
+
+    viz_filterbank : bool (default True)
+        Whether to visualize the filterbank.
+
+    viz_coeffs : bool / None
+        Whether to visualize the coefficients (requires `Scx`).
+
+        The coefficients and filters are placed in same slots in the 2D grid,
+        so if both are visualized, we see which wavelet produced which
+        coefficient. An exception is `sampling_psi_fr='recalibrate'`, as the
+        visual supports only one `psi_id`, while `'recalibrate'` varies it
+        with `xi2`.
+
+        Defaults to True if `Scx` is not None.
+
+    viz_spins : tuple[bool]
+        `viz_spin_up, viz_spin_dn = viz_spins` -- can use to visualize only
+        one of the two spinned pairs.
+
+    axis_labels : bool (default True)
+        If True, will label plot with title, axis labels, and units.
+
+    fs : None / int
+        Sampling rate. If provided, will display physical units (Hz), else
+        discrete (cycles/sample).
+
+    savename : str / None
+        If str, will save as `savename + '0.png'` and `savename + '1.png'`,
+        for filterbank and coeffs respectively.
+
+    psi_id : int
+        Indexes `jtfs.psi1_f_fr_up` & `_dn` - the ID of the filterbank
+        (lower = tailored to larger input along frequency).
+
+    w, h : int, int
+        Scale plot width and height, respectively.
+
+    show : bool (default True)
+        Whether to display generated plots. Else, will `plt.close(fig)`
+        (after saving, if applicable).
+
+    plot_cfg : None / dict
+        Configures plotting. Will fill for missing values from defaults
+        (see `plot_cfg_defaults` in source code). Supported key-values:
+
+            'phi_t_blank' : bool:
+              If True, draws `phi_t * psi_f` pairs only once (since up == down).
+              Can't be `True` with `phi_t_loc='both'`.
+
+            'phi_t_loc' : str['top', 'bottom', 'both']
+              'top' places `phi_t * psi_f` pairs alongside "up" spin,
+              'bottom' alongside "down", and 'both' places them in both spots.
+              Additionally, 'top' and 'bottom' will scale coefficients by
+              `sqrt(2)` for energy norm (since they're shown in half of all
+              places).
+
+            'label_kw_xy' : dict
+                Passed to all `ax.set_xlabel` and `ax.set_ylabel`.
+
+            'title_kw' : dict
+                Passed to all `fig.suptitle`.
+
+            'suplabel_kw_x' : dict
+                Passed to all `fig.supxlabel`.
+
+            'suplabel_kw_y' : dict
+                Passed to all `fig.supylabel`.
+
+            'imshow_kw_filterbank' : dict
+                Passed to all `ax.imshow` for filterbank visuals.
+
+            'imshow_kw_coeffs' : dict
+                Passed to all `ax.imshow` for coefficient visuals.
+
+            'subplots_adjust_kw' : dict
+                Passed to all `fig.subplots_adjust`.
+
+            'savefig_kw': dict
+                Passed to all `fig.savefig`.
+
+            'filterbank_zoom_xy': float
+                Zoom factor for filterbank visual.
+                >1 = zoom in, <1 = zoom out.
+
+            'coeff_color_max_mult' : float
+                Scales plot color norm via
+                    `ax.imshow(, vmin=0, vmax=coeff_color_max_mult * Scx.max())`
+                `<1` will pronounce lower-valued coefficients and clip the rest.
+
+    Note: `xi1_fr` units
+    --------------------
+
+    Meta stores discrete, [cycles/sample].
+    Want [cycles/octave].
+    To get physical, we do `xi * fs`, where `fs [samples/second]`.
+    Hence, find `fs` equivalent for `octaves`.
+
+    If `Q1` denotes "number of first-order wavelets per octave", we
+    realize that "samples" of `psi_fr` are actually
+    "first-order wavelets":
+        `xi [cycles/(first-order wavelets)]`
+    Hence, set
+        `fs [(first-order wavelets)/octave]`
+    and so
+        `xi1_fr = xi*fs = xi*Q1 [cycles/octave]`
+
+     - This is consistent with raising `Q1` being equivalent of raising
+       the physical sampling rate (i.e. sample `n1` more densely without
+       changing the number of octaves).
+     - Raising `J1` is then equivalent to increasing physical duration
+       (seconds) without changing sampling rate, so `xi1_fr` is only a
+       function of `Q1`.
+    """
+    # handle args ############################################################
+    # `jtfs`, `Scx` sanity checks; set `viz_coeffs`
+    if Scx is not None:
+        assert 'dict:' in jtfs.out_type, jtfs.out_type
+        if not isinstance(Scx, dict):
+            assert isinstance(Scx, np.ndarray), type(Scx)
+            assert Scx.ndim == 4, Scx.shape
+        else:
+            assert isinstance(Scx, dict), type(Scx)
+        if viz_coeffs is None:
+            viz_coeffs = True
+        elif not viz_coeffs:
+            warnings.warn("Passed `Scx` and `viz_coeffs=False`; won't visualize!")
+    elif viz_coeffs:
+        raise ValueError("`viz_coeffs=True` requires passing `Scx`.")
+
+    # `plot_cfg`, defaults
+    plot_cfg_defaults = {
+      'phi_t_blank': True,
+      'phi_t_loc': 'bottom',
+      'label_kw_xy':   dict(fontsize=20),
+      'title_kw':      dict(weight='bold', fontsize=26, y=1.02),
+      'suplabel_kw_x': dict(weight='bold', fontsize=24, y=-.037),
+      'suplabel_kw_y': dict(weight='bold', fontsize=24, x=-.066),
+      'imshow_kw_filterbank': dict(aspect='auto', cmap='bwr'),
+      'imshow_kw_coeffs':     dict(aspect='auto', cmap='turbo'),
+      'subplots_adjust_kw': dict(left=0, right=1, bottom=0, top=1,
+                                 wspace=.02, hspace=.02),
+      'savefig_kw': dict(bbox_inches='tight'),
+      'filterbank_zoom_xy': .9,
+      'coeff_color_max_mult': .8,
+    }
+    C = fill_default_args(plot_cfg, plot_cfg_defaults, copy_original=True)
+
+    # viz_spin; phi_t_loc; phi_t_blank
+    viz_spin_up, viz_spin_dn = viz_spins
+
+    assert C['phi_t_loc'] in ('top', 'bottom', 'both')
+    if C['phi_t_loc'] == 'both':
+        if C['phi_t_blank']:
+            warnings.warn("`phi_t_blank` does nothing if `phi_t_loc='both'`")
+            C['phi_t_blank'] = 0
+
+    # fs
+    if fs is not None:
+        f_units = "[Hz]"
+    else:
+        f_units = "[cycles/sample]"
+
+    # pack `Scx`, get meta ###################################################
+    jmeta = jtfs.meta()
+    if isinstance(Scx, dict):
+        Scx = pack_coeffs_jtfs(Scx, jmeta, structure=2, out_3D=jtfs.out_3D,
+                               sampling_psi_fr=jtfs.sampling_psi_fr)
+    Scx = Scx[:, :, ::-1]  # reverse `n1` so `low index <=> high freq`
+
+    # unpack filters and relevant meta #######################################
+    n_n2s = sum(p['j'] > 0 for p in jtfs.psi2_f)
+    n2s    = np.unique(jmeta['n']['psi_t * psi_f_up'][:, 0])
+    n1_frs = np.unique(jmeta['n']['psi_t * psi_f_up'][:, 1])
+    n_n2s, n_n1_frs = len(n2s), len(n1_frs)
+
+    psi2s = [p for n2, p in enumerate(jtfs.psi2_f) if n2 in n2s]
+    psis_up, psis_dn = [[p for n1_fr, p in enumerate(psi1_f_fr[psi_id])
+                         if n1_fr in n1_frs]
+                        for psi1_f_fr in (jtfs.psi1_f_fr_up, jtfs.psi1_f_fr_dn)]
+    pdn_meta = {field: [value for n1_fr, value in
+                        enumerate(jtfs.psi1_f_fr_dn[field][psi_id])
+                        if n1_fr in n1_frs]
+                for field in jtfs.psi1_f_fr_dn if isinstance(field, str)}
+
+    # Visualize ################################################################
+    # helpers ###################################
+    def no_border(ax):
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines:
+            ax.spines[spine].set_visible(False)
+
+    def to_time(p_f):
+        while isinstance(p_f, (dict, list)):
+            p_f = p_f[0]
+        return ifftshift(ifft(p_f.squeeze()))
+
+    # generate canvas ###########################
+    if viz_spin_up and viz_spin_dn:
+        n_rows = 2*n_n1_frs + 1
+    else:
+        n_rows = n_n1_frs + 1
+    n_cols = n_n2s + 1
+
+    width  = 11 * w
+    height = 11 * n_rows / n_cols * h
+
+    if viz_filterbank:
+        fig0, axes0 = plt.subplots(n_rows, n_cols, figsize=(width, height))
+    if viz_coeffs:
+        fig1, axes1 = plt.subplots(n_rows, n_cols, figsize=(width, height))
+
+    # compute common params to zoom on wavelets based on largest wavelet
+    # centers
+    n1_fr_largest = n_n1_frs - 1
+    n2_largest = n_n2s - 1
+    pf_f = psis_dn[n1_fr_largest].squeeze()
+    pt_f = psi2s[n2_largest][0].squeeze()
+    ct = len(pt_f) // 2
+    cf = len(pf_f) // 2
+    # supports
+    # `1/2` is base zoom since 'support' is total support, so halving
+    # allows using it like `psi[center-st:center+st]`.
+    zoom = (1 / 2) / C['filterbank_zoom_xy']
+    st = int(psi2s[n2_largest]['support'][0]    * zoom)
+    sf = int(pdn_meta['support'][n1_fr_largest] * zoom)
+
+    # coeff max
+    cmx = Scx.max() * C['coeff_color_max_mult']
+
+    # plot pairs ################################
+    def plot_spinned(up):
+        def label_axis(ax, n1_fr_idx, n2_idx):
+            at_border = bool(n1_fr_idx == len(psi1_frs) - 1)
+            if at_border:
+                xi2 = psi2s[::-1][n2_idx]['xi']
+                if fs is not None:
+                    xi2 = xi2 * fs
+                xi2 = _format_ticks(xi2)
+                ax.set_xlabel(xi2, **C['label_kw_xy'])
+
+        if up:
+            psi1_frs = psis_up
+        else:
+            psi1_frs = psis_dn[::-1]
+
+        for n2_idx, pt_f in enumerate(psi2s[::-1]):
+            for n1_fr_idx, pf_f in enumerate(psi1_frs):
+                # compute axis & coef indices ################################
+                if up:
+                    row_idx = n1_fr_idx
+                    coef_n1_fr_idx = n1_fr_idx
+                else:
+                    if viz_spin_up:
+                        row_idx = n1_fr_idx + 1 + n_n1_frs
+                    else:
+                        row_idx = n1_fr_idx + 1
+                    coef_n1_fr_idx = n1_fr_idx + n_n1_frs + 1
+                col_idx = n2_idx + 1
+                coef_n2_idx = n2_idx + 1
+
+                # visualize ##################################################
+                # filterbank
+                if viz_filterbank:
+                    pt = to_time(pt_f)
+                    pf = to_time(pf_f)
+                    # trim to zoom on wavelet
+                    pt = pt[ct - st:ct + st + 1]
+                    pf = pf[cf - sf:cf + sf + 1]
+
+                    Psi = pf[:, None] * pt[None]
+                    mx = np.abs(Psi).max()
+
+                    ax0 = axes0[row_idx, col_idx]
+                    ax0.imshow(Psi.real, vmin=-mx, vmax=mx,
+                               **C['imshow_kw_filterbank'])
+
+                    # axis styling
+                    no_border(ax0)
+                    if axis_labels:
+                        label_axis(ax0, n1_fr_idx, n2_idx)
+
+                # coeffs
+                if viz_coeffs:
+                    c = Scx[coef_n2_idx, coef_n1_fr_idx]
+
+                    ax1 = axes1[row_idx, col_idx]
+                    ax1.imshow(c, vmin=0, vmax=cmx,
+                               **C['imshow_kw_coeffs'])
+
+                    # axis styling
+                    no_border(ax1)
+                    if axis_labels:
+                        label_axis(ax1, n1_fr_idx, n2_idx)
+
+    if viz_spin_up:
+        plot_spinned(up=True)
+    if viz_spin_dn:
+        plot_spinned(up=False)
+
+    # psi_t * phi_f ##########################################################
+    if viz_filterbank:
+        phif = to_time(jtfs.phi_f_fr)
+        phif = phif[cf - sf:cf + sf + 1]
+
+    if viz_spin_up:
+        row_idx = n_n1_frs
+    else:
+        row_idx = 0
+    coef_n1_fr_idx = n_n1_frs
+
+    for n2_idx, pt_f in enumerate(psi2s[::-1]):
+        # compute axis & coef indices
+        col_idx = n2_idx + 1
+        coef_n2_idx = n2_idx + 1
+
+        # filterbank
+        if viz_filterbank:
+            pt = to_time(pt_f)
+            pt = pt[ct - st:ct + st + 1]
+
+            Psi = phif[:, None] * pt[None]
+            mx = np.abs(Psi).max()
+
+            ax0 = axes0[row_idx, col_idx]
+            ax0.imshow(Psi.real, vmin=-mx, vmax=mx, **C['imshow_kw_filterbank'])
+            no_border(ax0)
+
+        # coeffs
+        if viz_coeffs:
+            ax1 = axes1[row_idx, col_idx]
+            c = Scx[coef_n2_idx, coef_n1_fr_idx]
+            ax1.imshow(c, vmin=0, vmax=cmx, **C['imshow_kw_coeffs'])
+            no_border(ax1)
+
+    # phi_t * psi_f ##########################################################
+    def plot_phi_t(up):
+        def label_axis(ax, n1_fr_idx):
+            if up:
+                filter_n1_fr_idx = n1_fr_idx
+            else:
+                filter_n1_fr_idx = n_n1_frs - n1_fr_idx - 1
+
+            xi1_fr = pdn_meta['xi'][filter_n1_fr_idx] * jtfs.Q[0]
+            if not up:
+                xi1_fr = -xi1_fr
+            xi1_fr = _format_ticks(xi1_fr)
+            ax.set_ylabel(xi1_fr, **C['label_kw_xy'])
+
+            at_border = bool(n1_fr_idx == len(psi1_frs) - 1)
+            if at_border and axis_labels:
+                ax.set_xlabel("0", **C['label_kw_xy'])
+
+        if C['phi_t_loc'] == 'top' or (C['phi_t_loc'] == 'both' and up):
+            if up:
+                psi1_frs = psis_up
+                assert not viz_spin_dn or (viz_spin_up and viz_spin_dn)
+            else:
+                if viz_spin_up and viz_spin_dn:
+                    # don't show stuff if both spins given
+                    psi1_frs = [p*0 for p in psis_up]
+                else:
+                    psi1_frs = psis_dn[::-1]
+        elif C['phi_t_loc'] == 'bottom' or (C['phi_t_loc'] == 'both' and not up):
+            if up:
+                if viz_spin_up and viz_spin_dn:
+                    # don't show stuff if both spins given
+                    psi1_frs = [p*0 for p in psis_up]
+                else:
+                    psi1_frs = psis_up
+            else:
+                psi1_frs = psis_dn[::-1]
+                assert not viz_spin_up or (viz_spin_up and viz_spin_dn)
+
+        col_idx = 0
+        coef_n2_idx = 0
+        for n1_fr_idx, pf_f in enumerate(psi1_frs):
+            if up:
+                row_idx = n1_fr_idx
+                coef_n1_fr_idx = n1_fr_idx
+            else:
+                if viz_spin_up and viz_spin_dn:
+                    row_idx = n1_fr_idx + 1 + n_n1_frs
+                else:
+                    row_idx = n1_fr_idx + 1
+                coef_n1_fr_idx = n1_fr_idx + 1 + n_n1_frs
+
+            if viz_filterbank:
+                pf = to_time(pf_f)
+                pf = pf[cf - sf:cf + sf + 1]
+
+                Psi = pf[:, None] * phit[None]
+
+                ax0 = axes0[row_idx, col_idx]
+
+                if C['phi_t_loc'] != 'both':
+                    # energy norm (no effect if color norm adjusted to Psi)
+                    Psi *= np.sqrt(2)
+
+                if C['phi_t_loc'] == 'top':
+                    if not up and (viz_spin_up and viz_spin_dn):
+                        # actually zero but that defaults the plot to max negative
+                        mx = 1
+                    else:
+                        mx = np.abs(Psi).max()
+                elif C['phi_t_loc'] == 'bottom':
+                    if up and (viz_spin_up and viz_spin_dn):
+                        # actually zero but that defaults the plot to max negative
+                        mx = 1
+                    else:
+                        mx = np.abs(Psi).max()
+                elif C['phi_t_loc'] == 'both':
+                    mx = np.abs(Psi).max()
+                ax0.imshow(Psi.real, vmin=-mx, vmax=mx,
+                           **C['imshow_kw_filterbank'])
+
+                # axis styling
+                no_border(ax0)
+                if axis_labels:
+                    label_axis(ax0, n1_fr_idx)
+
+            if viz_coeffs:
+                ax1 = axes1[row_idx, col_idx]
+                skip_coef = bool(
+                    C['phi_t_blank'] and ((C['phi_t_loc'] == 'top' and not up) or
+                                          (C['phi_t_loc'] == 'bottom' and up)))
+
+                if not skip_coef:
+                    c = Scx[coef_n2_idx, coef_n1_fr_idx]
+                    if C['phi_t_loc'] != 'both':
+                        # energy norm since we viz only once;
+                        # did /= sqrt(2) in pack_coeffs_jtfs
+                        c = c * np.sqrt(2)
+                    if C['phi_t_loc'] == 'top':
+                        if not up and (viz_spin_up and viz_spin_dn):
+                            c = c * 0  # viz only once
+                    elif C['phi_t_loc'] == 'bottom':
+                        if up and (viz_spin_up and viz_spin_dn):
+                            c = c * 0  # viz only once
+                    ax1.imshow(c, vmin=0, vmax=cmx,
+                               **C['imshow_kw_coeffs'])
+
+                # axis styling
+                no_border(ax1)
+                if axis_labels:
+                    label_axis(ax1, n1_fr_idx)
+
+    if viz_filterbank:
+        phit = to_time(jtfs.phi_f)
+        phit = phit[ct - st:ct + st + 1]
+
+    if viz_spin_up:
+        plot_phi_t(up=True)
+    if viz_spin_dn:
+        plot_phi_t(up=False)
+
+    # phi_t * phi_f ##############################################################
+    def label_axis(ax):
+        ax.set_ylabel("0", **C['label_kw_xy'])
+
+    if viz_spin_up:
+        row_idx = n_n1_frs
+    else:
+        row_idx = 0
+    col_idx = 0
+    coef_n2_idx = 0
+    coef_n1_fr_idx = n_n1_frs
+
+    # filterbank
+    if viz_filterbank:
+        Psi = phif[:, None] * phit[None]
+        mx = np.abs(Psi).max()
+
+        ax0 = axes0[row_idx, col_idx]
+        ax0.imshow(Psi.real, vmin=-mx, vmax=mx, **C['imshow_kw_filterbank'])
+
+        # axis styling
+        no_border(ax0)
+        if axis_labels:
+            label_axis(ax0)
+
+    # coeffs
+    if viz_coeffs:
+        c = Scx[coef_n2_idx, coef_n1_fr_idx]
+        ax1 = axes1[row_idx, col_idx]
+        ax1.imshow(c, vmin=0, vmax=cmx, **C['imshow_kw_coeffs'])
+
+        # axis styling
+        no_border(ax1)
+        if axis_labels:
+            label_axis(ax1)
+
+    # finalize ###############################################################
+    def fig_adjust(fig):
+        if axis_labels:
+            fig.supxlabel(f"Temporal modulation {f_units}",
+                          **C['suplabel_kw_x'])
+            fig.supylabel("Freqential modulation [cycles/octave]",
+                          **C['suplabel_kw_y'])
+        fig.subplots_adjust(**C['subplots_adjust_kw'])
+
+    if viz_filterbank:
+        fig_adjust(fig0)
+        if axis_labels:
+            fig0.suptitle("JTFS filterbank (real part)", **C['title_kw'])
+    if viz_coeffs:
+        fig_adjust(fig1)
+        if axis_labels:
+            fig1.suptitle("JTFS coefficients", **C['title_kw'])
+
+    if savename is not None:
+        if viz_filterbank:
+            fig0.savefig(f'{savename}0.png', **C['savefig_kw'])
+        if viz_coeffs:
+            fig1.savefig(f'{savename}1.png', **C['savefig_kw'])
+
+    if show:
+        plt.show()
+    else:
+        if viz_filterbank:
+            plt.close(fig0)
+        if viz_coeffs:
+            plt.close(fig1)
+
+
 def make_gif(loaddir, savepath, duration=250, start_end_pause=3, ext='.png',
              delimiter='', overwrite=False, delete_images=False, HD=None,
              verbose=False):
@@ -1817,6 +2261,37 @@ def _handle_gif_args(savedir, base_name, images_ext, save_images, overwrite,
     savepath = os.path.join(savedir, base_name + '.gif')
     _check_savepath(savepath, overwrite)
     return savedir, savepath, images_ext, save_images, show, do_gif
+
+
+def _format_ticks(ticks, max_digits=3):
+    # `max_digits` not strict
+    not_iterable = bool(not isinstance(ticks, (tuple, list, np.ndarray)))
+    if not_iterable:
+        ticks = [ticks]
+    _ticks = []
+    for tk in ticks:
+        negative = False
+        if tk < 0:
+            negative = True
+            tk = abs(tk)
+
+        n_nondecimal = np.log10(tk)
+        if n_nondecimal < 0:
+            n_nondecimal = int(np.ceil(abs(n_nondecimal)) + 1)
+            n_total = n_nondecimal + 2
+            tk = f"%.{n_total - 1}f" % tk
+        else:
+            n_nondecimal = int(np.ceil(abs(n_nondecimal)))
+            n_decimal = max(0, max_digits - n_nondecimal)
+            tk = round(tk, n_decimal)
+            tk = f"%.{n_decimal}f" % tk
+
+        if negative:
+            tk = "-" + tk
+        _ticks.append(tk)
+    if not_iterable:
+        _ticks = _ticks[0]
+    return _ticks
 
 
 def _check_savepath(savepath, overwrite):
