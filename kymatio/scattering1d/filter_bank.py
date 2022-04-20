@@ -904,7 +904,7 @@ def energy_norm_filterbank_tm(psi1_f, psi2_f, phi_f, J, log2_T):
     for n2 in range(len(psi2_f)):
         for k in psi2_f[n2]:
             if isinstance(k, int) and k != 0:
-                psi2_f[n2][k] *= scaling_factors2[1][n2]
+                psi2_f[n2][k] *= scaling_factors2[0][n2]
 
 
 def energy_norm_filterbank_fr(psi1_f_fr_up, psi1_f_fr_dn, phi_f_fr,
@@ -954,10 +954,10 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
     Parameters
     ----------
     psi_fs0 : list[np.ndarray]
-        Analytic filters if `psi_fs1=None`, else anti-analytic (spin up).
+        Analytic filters (also spin up for frequential).
 
     psi_fs1 : list[np.ndarray] / None
-        Analytic filters (spin down). If None, filterbank is treated as
+        Anti-analytic filters (spin down). If None, filterbank is treated as
         analytic-only, and LP peaks are scaled to 2 instead of 1.
 
     phi_f : np.ndarray / None
@@ -1000,7 +1000,9 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
     case behavior is accounted for in one go (which is possible but complicated);
     the computational burden is minimal.
     """
-    def norm_filter(psi_fs, peak_idxs, lp_sum, n, s_idx=1):
+    from ..toolkit import compute_lp_sum
+
+    def norm_filter(psi_fs, peak_idxs, lp_sum, n, s_idx=0):
         # higher freq idx
         if n - 1 in peak_idxs:
             # midpoint
@@ -1014,7 +1016,8 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
                         break
                     lookback += 1
             midpt = (pi0 + pi1) / 2
-            a = (math.ceil(midpt) if s_idx == 1 else
+            # round closer to Nyquist
+            a = (math.ceil(midpt) if s_idx == 0 else
                  math.floor(midpt))
         else:
             a = peak_idxs[n]
@@ -1022,20 +1025,20 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
         # lower freq idx
         if n + 1 in peak_idxs:
             if n == 0 and nyquist_correction:
-                b = a + 1 if s_idx == 0 else a - 1
+                b = a + 1 if s_idx == 1 else a - 1
             else:
                 b = peak_idxs[n + 1]
         else:
-            b = (None if s_idx == 0 else
+            b = (None if s_idx == 1 else
                  1)  # exclude dc
 
         # peak duplicate
         if a == b:
-            if s_idx == 0:
+            if s_idx == 1:
                 b += 1
             else:
                 b -= 1
-        start, end = (a, b) if s_idx == 0 else (b, a)
+        start, end = (a, b) if s_idx == 1 else (b, a)
 
         # include endpoint
         if end is not None:
@@ -1060,7 +1063,7 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
         scaling_factors[s_idx][n] *= factor
 
     def correct_nyquist(psi_fs_all, peak_idxs, lp_sum):
-        def _do_correction(start, end, s_idx=1):
+        def _do_correction(start, end, s_idx=0):
             lp_max = lp_sum[start:end].max()
             factor = np.sqrt(peak_target / lp_max)
             for n in (0, 1):
@@ -1078,7 +1081,7 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
             for s_idx, psi_fs in enumerate(psi_fs_all):
                 a = peak_idxs[s_idx][0]
                 b = peak_idxs[s_idx][2]
-                start, end = (a, b) if s_idx == 0 else (b, a)
+                start, end = (a, b) if s_idx == 1 else (b, a)
                 # include endpoint
                 end += 1
                 _do_correction(start, end, s_idx)
@@ -1128,11 +1131,14 @@ def energy_norm_filterbank(psi_fs0, psi_fs1=None, phi_f=None, J=None, log2_T=Non
     # ensure LP sum peaks at 2 (analytic-only) or 1 (analytic + anti-analytic)
     def get_lp_sum():
         if analytic_only:
-            return _compute_lp_sum(psi_fs0, phi_f, J, log2_T)
-        return (_compute_lp_sum(psi_fs0, phi_f, J, log2_T) +
-                _compute_lp_sum(psi_fs1))
+            return compute_lp_sum(psi_fs0, phi_f, J, log2_T,
+                                  fold_antianalytic=True)
+        else:
+            return (compute_lp_sum(psi_fs0, phi_f, J, log2_T) +
+                    compute_lp_sum(psi_fs1))
 
     lp_sum = get_lp_sum()
+    assert len(lp_sum) % 2 == 0, "expected even-length wavelets"
     if analytic_only:  # time scattering
         for n in range(len(psi_fs0)):
             norm_filter(psi_fs0, peak_idxs, lp_sum, n)
@@ -1375,14 +1381,3 @@ def compute_temporal_width(p_f, N=None, pts_per_scale=6, fast=True,
 
     width = T_est
     return width
-
-#### helpers #################################################################
-def _compute_lp_sum(psi_fs, phi_f=None, J=None, log2_T=None):
-    lp_sum = 0
-    for psi_f in psi_fs:
-        lp_sum += np.abs(psi_f)**2
-    if phi_f is not None and (
-            # else lowest frequency bandpasses are too attenuated
-            log2_T is not None and J is not None and log2_T >= J):
-        lp_sum += np.abs(phi_f)**2
-    return lp_sum

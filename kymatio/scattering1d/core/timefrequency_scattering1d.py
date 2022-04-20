@@ -370,13 +370,15 @@ def _frequency_scattering(Y_2_hat, j2, n2, pad_fr, k1_plus_k2, trim_tm, commons,
     (B, scf, out_exclude, aligned, _, oversampling_fr, average_fr, out_3D,
      paths_exclude, *_) = commons
 
+    # NOTE: to compute up, we convolve with *down*, since `U1` is time-reversed
+    # relative to the sampling of the wavelets.
     psi1_fs, spins = [], []
     if ('psi_t * psi_f_up' not in out_exclude or
             'psi_t * phi_f' not in out_exclude):
-        psi1_fs.append(scf.psi1_f_fr_up)
+        psi1_fs.append(scf.psi1_f_fr_dn)
         spins.append(1 if spin_down else 0)
     if spin_down and 'psi_t * psi_f_dn' not in out_exclude:
-        psi1_fs.append(scf.psi1_f_fr_dn)
+        psi1_fs.append(scf.psi1_f_fr_up)
         spins.append(-1)
 
     scale_diff = scf.scale_diffs[n2]

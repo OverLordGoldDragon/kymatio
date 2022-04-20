@@ -1263,6 +1263,9 @@ def viz_jtfs_2d(jtfs, Scx=None, viz_filterbank=True, viz_coeffs=None,
     viz_filterbank : bool (default True)
         Whether to visualize the filterbank.
 
+        Note, each 2D wavelet's plot is color-normed to the wavelet's maxima
+        (otherwise most wavelets vanish).
+
     viz_coeffs : bool / None
         Whether to visualize the coefficients (requires `Scx`).
 
@@ -1438,6 +1441,12 @@ def viz_jtfs_2d(jtfs, Scx=None, viz_filterbank=True, viz_coeffs=None,
     psis_up, psis_dn = [[p for n1_fr, p in enumerate(psi1_f_fr[psi_id])
                          if n1_fr in n1_frs]
                         for psi1_f_fr in (jtfs.psi1_f_fr_up, jtfs.psi1_f_fr_dn)]
+    # must time-reverse to plot, so that
+    #     low plot idx <=> high wavelet idx,    i.e.
+    #                  <=> high spatial sample, i.e.
+    #                  <=> high log-frequency
+    # Up is time-reversed down, so just swap
+    psis_dn, psis_up = psis_up, psis_dn
     pdn_meta = {field: [value for n1_fr, value in
                         enumerate(jtfs.psi1_f_fr_dn[field][psi_id])
                         if n1_fr in n1_frs]

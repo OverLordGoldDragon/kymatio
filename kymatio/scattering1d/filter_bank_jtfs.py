@@ -62,6 +62,7 @@ class _FrequencyScatteringBase(ScatteringBase):
         # TODO doc: F_kind = 'fir' still computes with 'gauss' for `phi_f` pairs
         # TODO: "instantaneous geometry" presrved? need p h a s e
         # TODO better jtfs_exmin
+        # TODO strided stft fwd bcwd?
 
     def build(self):
         self.sigma0 = 0.1
@@ -263,9 +264,9 @@ class _FrequencyScatteringBase(ScatteringBase):
                     pf = psi_fs[psi_id][n1_fr]
                     M = len(pf)
                     if s1_fr == 0:
-                        pf[:M//2] = 0      # anti-analytic, zero positives
-                    else:
                         pf[M//2 + 1:] = 0  # analytic, zero negatives
+                    else:
+                        pf[:M//2] = 0      # anti-analytic, zero positives
                     pf[M//2] /= 2          # halve Nyquist
 
     def adjust_padding_and_filters(self):
@@ -1172,8 +1173,8 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
                 2: [0]
 
     psi1_f_fr_dn : list[dict]
-        Same as `psi1_f_fr_up` but with "down" spin (analytic, whereas "up"
-        is anti-analytic wavelet).
+        Same as `psi1_f_fr_up` but with "down" spin (anti-analytic, whereas "up"
+        is analytic wavelet).
 
     j0_max : int / None
         Sets `max_subsample_equiv_before_psi_fr`, see its docs in
@@ -1259,7 +1260,7 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
             continue
 
         # build wavelets #####################################################
-        psis_dn = []
+        psis_up = []
         for n1_fr in range(n_psi):
             # ensure we compute at valid `N_fr_scale`, `n1_fr`
             if first_scale:
@@ -1286,7 +1287,7 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
             # expand dim to multiply along freq like (2, 32, 4) * (32, 1)
             psi = morlet_1d(padded_len, xi, sigma, normalize=normalize_fr,
                             P_max=P_max, eps=eps)[:, None]
-            psis_dn.append(psi)
+            psis_up.append(psi)
 
         # if all `n1_fr` built, register & append to filterbank ##############
         if first_scale:
@@ -1298,10 +1299,10 @@ def psi_fr_factory(psi_fr_params, N_fr_scales_unique,
 
         # append to filterbank
         psi_id = psi_ids[scale_diff]
-        psi1_f_fr_dn[psi_id] = psis_dn
+        psi1_f_fr_up[psi_id] = psis_up
 
-        # compute spin up by time-reversing spin down in frequency domain
-        psi1_f_fr_up[psi_id] = [time_reverse_fr(p) for p in psis_dn]
+        # compute spin down by time-reversing spin up in frequency domain
+        psi1_f_fr_dn[psi_id] = [time_reverse_fr(p) for p in psis_up]
 
     ##########################################################################
 

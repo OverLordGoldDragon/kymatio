@@ -1461,11 +1461,39 @@ def est_energy_conservation(x, sc=None, T=None, F=None, J=None, J_fr=None,
     return (ESr, Scx, sc) if get_out else ESr
 
 
+def compute_lp_sum(psi_fs, phi_f=None, J=None, log2_T=None,
+                   fold_antianalytic=False):
+    lp_sum = 0
+    for psi_f in psi_fs:
+        lp_sum += np.abs(psi_f)**2
+    if phi_f is not None and (
+            # else lowest frequency bandpasses are too attenuated
+            log2_T is not None and J is not None and log2_T >= J):
+        lp_sum += np.abs(phi_f)**2
+
+    if fold_antianalytic:
+        # reflect anti-analytic part onto analytic;
+        # goal is energy conservation - if this is ignored and we
+        # normalize analytic part perfectly to 2, the non-zero negative
+        # freqs will make the filterbank energy-expansive
+
+        # sum onto positives, excluding DC and Nyquist,
+        # from negatives, excluding Nyquist
+        lp_sum[1:len(lp_sum)//2] += lp_sum[len(lp_sum)//2 + 1:][::-1]
+        # zero what we just carried over to not duplicate later by accident
+        lp_sum[len(lp_sum)//2 + 1:] = 0
+        # with `analytic=True`, this has no effect (all negatives == 0)
+        # (note, "analytic" in "analytic_only" includes pseudo-analytic)
+    return lp_sum
+
+
 #### Validating 1D filterbank ################################################
 def validate_filterbank_tm(sc=None, psi1_f=None, psi2_f=None, phi_f=None,
                            criterion_amplitude=1e-3, verbose=True):
     """Runs `validate_filterbank()` on temporal filters; supports `Scattering1D`
     and `TimeFrequencyScattering1D`.
+
+    # TODO lp-sum-sum
 
     Parameters
     ----------

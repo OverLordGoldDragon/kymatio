@@ -11,7 +11,8 @@ from kymatio.toolkit import (drop_batch_dim_jtfs, jtfs_to_numpy, coeff_energy,
                              fdts, echirp, coeff_energy_ratios, energy,
                              est_energy_conservation, rel_l2, rel_ae,
                              validate_filterbank_tm, validate_filterbank_fr,
-                             pack_coeffs_jtfs, tensor_padded, normalize)
+                             pack_coeffs_jtfs, tensor_padded, normalize,
+                             compute_lp_sum)
 from kymatio.visuals import (coeff_distance_jtfs, compare_distances_jtfs,
                              energy_profile_jtfs, plot, plotscat)
 from kymatio.scattering1d.filter_bank import compute_temporal_width, gauss_1d
@@ -21,7 +22,7 @@ from utils import cant_import
 # NOTE: non-'numpy' skips `test_meta()` and `test_lp_sum()`
 default_backend = ('numpy', 'torch', 'tensorflow')[0]
 # set True to execute all test functions without pytest
-run_without_pytest = 0
+run_without_pytest = 1
 # set True to print assertion errors rather than raising them in `test_output()`
 output_test_print_mode = 1
 # set True to print assertion values of certain tests
@@ -185,7 +186,7 @@ def test_jtfs_vs_ts():
     """
     VARIANTS_ALL = ('perfect', 'ideal', 'practical', 'noisy')
     variants = VARIANTS_ALL
-    N = 2048
+    N = (2048, 4096)[0]
     N_scale = int(np.log2(N))
 
     # in case forgot to switch back to fast version
@@ -297,11 +298,11 @@ def test_jtfs_vs_ts():
     }
     # better results with larger N
     cfgs['th_ts'] = {
-        2048: {'perfect': 2e-16,
+        2048: {'perfect': 2.5e-16,
                'ideal': 8e-6,
                'practical': 6e-2,
                'noisy': 8e-2},
-        4096: {'perfect': 2e-16,
+        4096: {'perfect': 1.5e-16,
                'ideal': 2e-6,
                'practical': 5e-2,
                'noisy': 5e-2}
@@ -700,11 +701,14 @@ def test_lp_sum():
         if viz:
             halflen = len(psis[0]) // 2
             last_peak_idx = np.argmax(psis[0])
-            t_idxs0 = (slice(0, last_peak_idx + 5) if last_peak_idx < halflen else
-                       slice(last_peak_idx - 5, None))
+            first_peak_idx = np.argmax(psis[-1])
+            is_analytic = bool(first_peak_idx < halflen)
+
+            t_idxs0 = (slice(0, last_peak_idx + 5) if is_analytic else
+                       slice(max(last_peak_idx - 5, 0), None))
             if halflen > 50:
                 # low freq portion may still be relevant in is_cqt=True
-                t_idxs_zoom = (slice(0, 50) if last_peak_idx < halflen else
+                t_idxs_zoom = (slice(0, 50) if is_analytic else
                                slice(halflen*2 - 50, None))
             else:
                 t_idxs_zoom = None
@@ -716,7 +720,8 @@ def test_lp_sum():
                 pkw = dict(show=1, ylims=(0, None))
                 plotscat(lp[t_idxs], ylims=(0, None))
                 if peak_target is not None:
-                    hlines = (peak_target, {'color': 'tab:red', 'linestyle': '--'})
+                    hlines = (peak_target,
+                              {'color': 'tab:red', 'linestyle': '--'})
                 else:
                     hlines = None
                 plot([], hlines=hlines, show=1)
@@ -908,6 +913,44 @@ def test_lp_sum():
             _assert(first_peak, last_peak, peak_target,
                     th_below_bin_1 * peak_target)
 
+    def check_lp_sum_sum(psi_fs, test_params_str, Q, psi_id=None):
+        def _maybe_viz_err(lp_sum):
+            if psi_id is None:
+                maybe_viz_err(lp_sum, psi_fs)
+            else:
+                # viz up & down separately
+                maybe_viz_err(lp_sum, psi_fs[:len(psi_fs)//2])
+                maybe_viz_err(lp_sum, psi_fs[len(psi_fs)//2:])
+
+        lp_sum = 0
+        for psi_f in psi_fs:
+            lp_sum += np.abs(psi_f)**2
+        lp_sum_sum = lp_sum.sum()
+
+        # `1` per bin, minus
+        #   - DC bin, since no phi
+        #   - half of Nyquist bin, since `analytic=True` cannot ever get a full
+        #     Nyquist (Nyquist bin is halved, so even in best case of the peak
+        #     placed at Nyquist, we get 0.5). Unclear if any correction is due
+        #     on this.
+        expected_sum = len(lp_sum) - 1 - 0.5
+        # scale according to tolerance
+        expected_above = expected_sum * (1 + th_sum_above)
+        expected_below = expected_sum * (1 - th_sum_below[Q])
+
+        # upper bound
+        if not lp_sum_sum < expected_above:
+            _maybe_viz_err(lp_sum)
+            raise AssertionError((
+                "{} >= {}, \n{}\npsi_id={}\nQ_chk={}".format(
+                    lp_sum_sum, expected_above, test_params_str, psi_id, Q)))
+        # lower bound
+        if not lp_sum_sum > expected_below:
+            _maybe_viz_err(lp_sum)
+            raise AssertionError((
+                "{} <= {}, \n{}\npsi_id={}\nQ_chk={}".format(
+                    lp_sum_sum, expected_below, test_params_str, psi_id, Q)))
+
     def get_test_params_str(test_params):
         return '\n'.join(f'{k}={v}' for k, v in test_params.items())
 
@@ -923,6 +966,8 @@ def test_lp_sum():
     th_below_one_psi = .5
     th_below_nonmax_pad = .5
     th_below_bin_1 = .98
+    th_sum_above = .01
+    th_sum_below = {1: .15, 2: .15, 8: .075, 16: .062}
     # assume subsampling works as intended past this;
     # hard to account for all edge cases with incomplete filterbanks
     max_k = 5
@@ -932,103 +977,130 @@ def test_lp_sum():
         for max_pad_factor in (None, 1):
           for max_pad_factor_fr in (None, 1):
             for sampling_filters_fr in ('resample', 'exclude', 'recalibrate'):
-              aligned = bool(sampling_filters_fr != 'recalibrate')
-              test_params = dict(Q=Q, r_psi=r_psi, max_pad_factor=max_pad_factor,
-                                 max_pad_factor_fr=max_pad_factor_fr,
-                                 sampling_filters_fr=sampling_filters_fr)
-              try:
-                  with warnings.catch_warnings(record=True) as _:
-                      # first determine N_frs to then set max F & J_fr
-                      jtfs = TimeFrequencyScattering1D(
-                          **common_params, **test_params, aligned=aligned)
-                      N_fr_scales_max = jtfs.N_fr_scales_max
-                      J_fr = (N_fr_scales_max
-                              if sampling_filters_fr != 'recalibrate' else
-                              N_fr_scales_max - 1)
-                      F = 2**J_fr
-                      test_params['F'] = F
-                      test_params['J_fr'] = J_fr
+              # others are duplicate in time; used to skip some tests
+              tm_not_duplicate = bool(
+                  sampling_filters_fr == 'resample' and max_pad_factor_fr is None)
+              for analytic in (True, False):
+                if not analytic and not tm_not_duplicate:
+                    continue
+                aligned = bool(sampling_filters_fr != 'recalibrate')
+                test_params = dict(Q=Q, r_psi=r_psi, analytic=analytic,
+                                   max_pad_factor=max_pad_factor,
+                                   max_pad_factor_fr=max_pad_factor_fr,
+                                   sampling_filters_fr=sampling_filters_fr)
+                try:
+                    with warnings.catch_warnings(record=True) as _:
+                        # first determine N_frs to then set max F & J_fr
+                        jtfs = TimeFrequencyScattering1D(
+                            **common_params, **test_params, aligned=aligned)
+                        N_fr_scales_max = jtfs.N_fr_scales_max
+                        J_fr = (N_fr_scales_max
+                                if sampling_filters_fr != 'recalibrate' else
+                                N_fr_scales_max - 1)
+                        F = 2**J_fr
+                        test_params['F'] = F
+                        test_params['J_fr'] = J_fr
 
-                  with warnings.catch_warnings(record=True) as ws:
-                      jtfs = TimeFrequencyScattering1D(
-                          **common_params, **test_params, aligned=aligned)
-              except Exception as e:
-                  print(get_test_params_str(test_params))
-                  raise e
+                    with warnings.catch_warnings(record=True) as ws:
+                        jtfs = TimeFrequencyScattering1D(
+                            **common_params, **test_params, aligned=aligned)
+                except Exception as e:
+                    print(get_test_params_str(test_params))
+                    raise e
 
-              # set reused params
-              test_params_str = get_test_params_str(test_params)
+                # set reused params
+                test_params_str = get_test_params_str(test_params)
 
-              warned = bool(any("max_pad_factor" in str(w.message)
-                                for w in ws))
-              if max_pad_factor is None and max_pad_factor_fr is None:
-                  assert not warned, test_params_str
-              warned_pad = {}
-              warned_pad['fr'] = bool(max_pad_factor_fr == 1 and warned)
-              warned_pad['tm'] = bool(max_pad_factor == 1 and warned)
+                warned = bool(any("max_pad_factor" in str(w.message)
+                                  for w in ws))
+                if max_pad_factor is None and max_pad_factor_fr is None:
+                    assert not warned, test_params_str
+                warned_pad = {}
+                warned_pad['fr'] = bool(max_pad_factor_fr == 1 and warned)
+                warned_pad['tm'] = bool(max_pad_factor == 1 and warned)
 
-              max_pad = {'tm': max_pad_factor is None,
-                         'fr': max_pad_factor_fr is None}
+                max_pad = {'tm': max_pad_factor is None,
+                           'fr': max_pad_factor_fr is None}
 
-              # temporal filterbank ##########################################
-              # others are duplicate in time
-              if sampling_filters_fr == 'resample' and max_pad_factor_fr is None:
-                  for psis_idx, psi_fs in enumerate([jtfs.psi1_f, jtfs.psi2_f]):
-                      # order = psis_idx + 1
-                      for k in psi_fs[-1]:
-                          if not isinstance(k, int) or k > max_k:
-                              continue
-                          # psi & phi
-                          lp = np.sum([np.abs(p[k])**2 for p in psi_fs if k in p],
-                                      axis=0)
-                          # lp += np.abs(jtfs.phi_f[0][k])**2
+                # temporal filterbank ##########################################
+                if tm_not_duplicate:
+                    for psis_idx, psi_fs in enumerate([jtfs.psi1_f, jtfs.psi2_f]):
+                        for k in psi_fs[-1]:
+                            if not isinstance(k, int) or k > max_k:
+                                continue
+                            # psi & phi
+                            lp = compute_lp_sum([p[k] for p in psi_fs if k in p],
+                                                phi_f=None,
+                                                fold_antianalytic=True)
 
-                          kw = dict(psi_fs=psi_fs, k=k, max_pad=max_pad['tm'])
-                          check_above(lp, test_params_str, warned_pad, **kw)
-                          check_below(lp, test_params_str, warned_pad, **kw)
+                            kw = dict(psi_fs=psi_fs, k=k, max_pad=max_pad['tm'])
+                            check_above(lp, test_params_str, warned_pad, **kw)
+                            check_below(lp, test_params_str, warned_pad, **kw)
 
-              # frequential filterbank #######################################
-              if warned_pad['fr']:
-                  # bad behavior obtained but warned about
-                  pass
-              else:
-                  for s1_fr, psi_fs in enumerate([jtfs.psi1_f_fr_up,
-                                                  jtfs.psi1_f_fr_dn]):
-                      for psi_id in psi_fs:
-                          if not isinstance(psi_id, int):
-                              continue
-                          elif (sampling_filters_fr == 'exclude' and
-                                    max_pad_factor_fr == 1 and
-                                    len(psi_fs[psi_id]) <= 3):
-                              # implem can't account for this case
-                              continue
-                          lp = 0
-                          # psi
-                          for p in psi_fs[psi_id]:
-                              lp += np.abs(p)**2
+                # frequential filterbank #######################################
+                if warned_pad['fr']:
+                    # bad behavior obtained but warned about
+                    pass
+                else:
+                    for s1_fr, psi_fs in enumerate([jtfs.psi1_f_fr_up,
+                                                    jtfs.psi1_f_fr_dn]):
+                        for psi_id in psi_fs:
+                            if not isinstance(psi_id, int):
+                                continue
+                            elif (sampling_filters_fr == 'exclude' and
+                                      max_pad_factor_fr == 1 and
+                                      len(psi_fs[psi_id]) <= 3):
+                                # implem can't account for this case
+                                continue
+                            lp = compute_lp_sum(psi_fs[psi_id], phi_f=None)
 
-                          # phi
-                          # scale_diff = list(jtfs.psi_ids.values()).index(psi_id)
-                          # pad_diff = (jtfs.J_pad_frs_max_init -
-                          #             jtfs.J_pad_frs[scale_diff])
-                          # lp += np.abs(jtfs.phi_f_fr[0][0][pad_diff])**2
+                            # phi
+                            # scale_diff = list(jtfs.psi_ids.values()
+                            #                   ).index(psi_id)
+                            # pad_diff = (jtfs.J_pad_frs_max_init -
+                            #             jtfs.J_pad_frs[scale_diff])
+                            # lp += np.abs(jtfs.phi_f_fr[0][0][pad_diff])**2
 
-                          ckw = dict(psi_fs=psi_fs, psi_id=psi_id,
-                                     sampling_filters_fr=sampling_filters_fr,
-                                     max_pad=max_pad['fr'])
-                          check_above(lp, test_params_str, warned_pad, **ckw)
-                          check_below(lp, test_params_str, warned_pad, **ckw)
+                            ckw = dict(psi_fs=psi_fs, psi_id=psi_id,
+                                       sampling_filters_fr=sampling_filters_fr,
+                                       max_pad=max_pad['fr'])
+                            check_above(lp, test_params_str, warned_pad, **ckw)
+                            check_below(lp, test_params_str, warned_pad, **ckw)
 
-              # assert same peak values (symmetry)
-              for psi_id in jtfs.psi1_f_fr_up:
-                  if not isinstance(psi_id, int):
-                      continue
-                  for i, (p_up, p_dn
-                          ) in enumerate(zip(jtfs.psi1_f_fr_up[psi_id],
-                                             jtfs.psi1_f_fr_dn[psi_id])):
-                      up_mx, dn_mx = p_up.max(), p_dn.max()
-                      assert up_mx == dn_mx, (i, up_mx, dn_mx,
-                                              "\n%s" % test_params_str)
+                # assert same peak values (symmetry) ###########################
+                for psi_id in jtfs.psi1_f_fr_up:
+                    if not isinstance(psi_id, int):
+                        continue
+                    for i, (p_up, p_dn
+                            ) in enumerate(zip(jtfs.psi1_f_fr_up[psi_id],
+                                               jtfs.psi1_f_fr_dn[psi_id])):
+                        up_mx, dn_mx = p_up.max(), p_dn.max()
+                        assert up_mx == dn_mx, (i, up_mx, dn_mx,
+                                                "\n%s" % test_params_str)
+
+                # complete filterbank energy conservation ######################
+                # assert lp sum sum indicates non-expansiveness.
+                # In particular, `analytic=False` may only account for
+                # negatives-only, while non-zero positives yield energy expansion.
+                # 'exclude' and `k > 0` are exceptions as they by definition
+                # compute subsets (while, if the "prior" is accurate, still
+                # conserving energy)
+                # temporal #######################################
+                if tm_not_duplicate:
+                    for psis_idx, psi_fs in enumerate([jtfs.psi1_f, jtfs.psi2_f]):
+                        psi_fs = [p[0] for p in psi_fs]
+                        check_lp_sum_sum(psi_fs, test_params_str,
+                                         Q=jtfs.Q[psis_idx])
+
+                # frequential ####################################
+                for psi_id in jtfs.psi1_f_fr_up:
+                    if (not isinstance(psi_id, int) or
+                        (sampling_filters_fr == 'exclude' and psi_id > 0)):
+                        continue
+                    psi_fs = (jtfs.psi1_f_fr_up[psi_id] +
+                              jtfs.psi1_f_fr_dn[psi_id])
+                    check_lp_sum_sum(psi_fs, test_params_str, Q=jtfs.Q_fr,
+                                     psi_id=psi_id)
 
 
 def test_compute_temporal_width():
@@ -2198,29 +2270,29 @@ def assert_pad_difference(jtfs, test_params_str):
 
 if __name__ == '__main__':
     if run_without_pytest:
-        test_alignment()
-        test_shapes()
-        test_jtfs_vs_ts()
-        test_freq_tp_invar()
-        test_up_vs_down()
-        test_sampling_psi_fr_exclude()
-        test_no_second_order_filters()
-        test_max_pad_factor_fr()
-        test_out_exclude()
-        test_global_averaging()
-        test_lp_sum()
-        test_compute_temporal_width()
-        test_tensor_padded()
-        test_pack_coeffs_jtfs()
-        test_energy_conservation()
-        test_est_energy_conservation()
-        test_implementation()
-        test_pad_mode_fr()
-        test_normalize()
-        test_backends()
-        test_differentiability_torch()
-        test_reconstruction_torch()
-        test_meta()
+        # test_alignment()
+        # test_shapes()
+        # test_jtfs_vs_ts()
+        # test_freq_tp_invar()
+        # test_up_vs_down()
+        # test_sampling_psi_fr_exclude()
+        # test_no_second_order_filters()
+        # test_max_pad_factor_fr()
+        # test_out_exclude()
+        # test_global_averaging()
+        # test_lp_sum()
+        # test_compute_temporal_width()
+        # test_tensor_padded()
+        # test_pack_coeffs_jtfs()
+        # test_energy_conservation()
+        # test_est_energy_conservation()
+        # test_implementation()
+        # test_pad_mode_fr()
+        # test_normalize()
+        # test_backends()
+        # test_differentiability_torch()
+        # test_reconstruction_torch()
+        # test_meta()
         test_output()
     else:
         pytest.main([__file__, "-s"])

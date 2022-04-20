@@ -149,10 +149,6 @@ class ScatteringBase1D(ScatteringBase):
             r_psi=self.r_psi, sigma0=self.sigma0, alpha=self.alpha,
             P_max=self.P_max, eps=self.eps)
 
-        # energy norm
-        if 'energy' in self.normalize:
-            energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
-                                      self.J, self.log2_T)
         # analyticity
         if self.analytic:
           for psi_fs in (self.psi1_f, self.psi2_f):
@@ -162,6 +158,12 @@ class ScatteringBase1D(ScatteringBase):
                     M = len(p[k])
                     p[k][M//2 + 1:] = 0  # zero negatives
                     p[k][M//2] /= 2      # halve Nyquist
+
+        # energy norm
+        # must do after analytic since analytic affects norm
+        if 'energy' in self.normalize:
+            energy_norm_filterbank_tm(self.psi1_f, self.psi2_f, self.phi_f,
+                                      self.J, self.log2_T)
 
     def meta(self):
         """Get meta information on the transform
@@ -853,11 +855,11 @@ class TimeFrequencyScatteringBase1D():
     $\Psi_{{\mu, l, s}}$ comprises of five kinds of joint wavelets:
 
         $\Psi_{{\mu, l, +1}}(t, \lambda) =
-        \psi_\mu^{{(2)}}(t) \psi_{{l, s}}(-\lambda)$
+        \psi_\mu^{{(2)}}(t) \psi_{{l, s}}(+\lambda)$
         spin up bandpass
 
         $\Psi_{{\mu, l, -1}}(t, \lambda) =
-        \psi_\mu^{{(2)}}(t) \psi_{{l, s}}(+\lambda)$
+        \psi_\mu^{{(2)}}(t) \psi_{{l, s}}(-\lambda)$
         spin down bandpass
 
         $\Psi_{{\mu, -\infty, 0}}(t, \lambda) =
@@ -880,9 +882,9 @@ class TimeFrequencyScatteringBase1D():
     filters $\psi_\lambda^{{(1)}}(t)$ and $\psi_\mu^{{(2)}}(t)$ are analytic
     wavelets with center frequencies $\lambda$ and $\mu$, while
     $\phi_T(t)$ is a real lowpass filter centered at the zero frequency.
-    $\psi_{{l, s}}(-\lambda)$ is like $\psi_\lambda^{{(1)}}(t)$ but with
+    $\psi_{{l, s}}(+\lambda)$ is like $\psi_\lambda^{{(1)}}(t)$ but with
     its own parameters (center frequency, support, etc), and an anti-analytic
-    complement (spin down is analytic).
+    complement (spin up is analytic).
 
     Filters are built at initialization. While the wavelets are fixed, other
     parameters may be changed after the object is created, such as `out_type`.
@@ -1176,8 +1178,8 @@ class TimeFrequencyScatteringBase1D():
 
     analytic : bool (default True)
         If True, will enforce strict analyticity/anti-analyticity:
-            - zero negative frequencies for temporal and spin down bandpasses
-            - zero positive frequencies for spin up bandpasses
+            - zero negative frequencies for temporal and spin up bandpasses
+            - zero positive frequencies for spin down bandpasses
 
         `True` is likely to improve FDTS-discriminability, especially for
         `r_psi > sqrt(.5)`, but may slightly worsen wavelet time decay.
